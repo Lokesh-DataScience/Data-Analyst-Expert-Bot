@@ -1,11 +1,19 @@
+
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_groq import ChatGroq
 from vector_db.faiss_db import create_faiss_vectorstore
 from langchain import hub
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 
 def build_chain():
-    vectorstore = create_faiss_vectorstore()
+    embedding = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": False}
+    )
+    vectorstore = FAISS.load_local("vectorstore_data", embedding, allow_dangerous_deserialization=True)
     retriever = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={'k': 6, 'lambda_mult': 0.25}

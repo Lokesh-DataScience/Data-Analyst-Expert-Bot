@@ -1,10 +1,27 @@
-from fastapi import FastAPI
-from api.chat import router as chat_router
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from chains.rag_chain import build_chain
 
-app = FastAPI(title="RAG + Groq Chatbot API")
+app = FastAPI()
 
-app.include_router(chat_router, prefix="/api", tags=["chat"])
+# Enable CORS for Streamlit
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Or restrict to ["http://localhost:8501"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the RAG + LLM Chatbot API"}
+# Input schema
+class QueryRequest(BaseModel):
+    question: str
+
+# Initialize your retrieval chain once
+rag_chain = build_chain()
+
+@app.post("/chat")
+def chat_endpoint(request: QueryRequest):
+    response = rag_chain.invoke({"input": request.question})
+    return {"response": response.get("answer", "No response")}

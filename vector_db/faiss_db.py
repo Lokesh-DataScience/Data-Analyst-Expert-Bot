@@ -29,4 +29,3 @@ def create_faiss_vectorstore(
         vectorstore.save_local(output_dir)
     except Exception as e:
         print(f"Error creating FAISS vectorstore: {e}")
-    return vectorstore
