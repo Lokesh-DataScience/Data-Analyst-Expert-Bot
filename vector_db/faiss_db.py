@@ -6,7 +6,7 @@ from loaders.load_data import load_jsonl
 data = load_jsonl("data/gfg_data.jsonl")
 
 def create_faiss_vectorstore(
-    output_dir="gfg_vectorstore",
+    output_dir="vectorstore_data",
     model_name="sentence-transformers/all-MiniLM-L6-v2",
     device="cpu"
 ):
