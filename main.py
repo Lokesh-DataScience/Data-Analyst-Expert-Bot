@@ -1,10 +1,11 @@
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.prompts import ChatPromptTemplate
 from vector_db.faiss_db import create_faiss_vectorstore
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-
+from langchain import hub
+from langchain_core.runnables import RunnableWithMessageHistory, RunnableLambda
+from memory.session_memory import get_memory
 load_dotenv()
 
 def main():
@@ -26,21 +27,23 @@ def main():
         )
 
         # Create combine_docs_chain
-        prompt = ChatPromptTemplate.from_template("""
-        You are a helpful assistant. Use the following context to answer the user's question.
-        
-        Context:
-        {context}
-        
-        Question: {input}
-        """)
-        combine_docs_chain = create_stuff_documents_chain(llm, prompt)
-
+        qa_prompt = hub.pull("langchain-ai/retrieval-qa-chat")
+        combine_docs_chain = create_stuff_documents_chain(llm, qa_prompt)        
         # Create retrieval chain
         print("Creating retrieval chain...")
-        retrieval_chain = create_retrieval_chain(retriever, combine_docs_chain)
+        base_chain = create_retrieval_chain(
+            retriever, 
+            combine_docs_chain
+        )
+        wrapped_chain = base_chain | RunnableLambda(lambda x: {"output": x["answer"]})
+        chain_with_memory = RunnableWithMessageHistory(
+            wrapped_chain,
+            lambda session_id: get_memory(session_id),
+            input_messages_key="input",
+            history_messages_key="chat_history"
+        )
         print("Retrieval chain created successfully.")
-        return retrieval_chain
+        return chain_with_memory
 
     except Exception as e:
         print(f"Error in main function: {e}")
@@ -50,15 +53,9 @@ if __name__ == "__main__":
     chain = main()
     if chain:
         while True:
-            query = input("You: ")
-            if query == "exit":
-                print("Exiting...")
+            query = input("\nUser: ")
+            if query.lower() in ["exit", "quit"]:
                 break
-            elif query.strip() == "":
-                print("Please enter a valid query.")
-                continue
-            else:
-              response = chain.invoke({"input": query})
-              print("\nAnswer:\n", response["answer"])
-
+            response = chain.invoke({"input": query}, config={"configurable": {"session_id": "user-123"}})
+            print("\nBot:", response["output"])
 

@@ -5,3 +5,5 @@ webdriver_manager==4.0.2
 langchain_huggingface==0.2.0
 langchain_community==0.3.24
 faiss-cpu==1.11.0
+fastapi==0.115.12
+uvicorn==0.34.3
