@@ -3,7 +3,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from splitters import recursive_split
 from loaders.load_data import load_jsonl
 
-data = load_jsonl("data/gfg_data.jsonl")
+data = load_jsonl("data/data.jsonl")
 
 def create_faiss_vectorstore(
     output_dir="vectorstore_data",

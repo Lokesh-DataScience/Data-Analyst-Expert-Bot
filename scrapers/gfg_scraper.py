@@ -101,7 +101,7 @@ for article in results:
             "source": "geeksforgeeks.org"
         })
 
-with open("data/gfg_data.jsonl", "a", encoding="utf-8") as f:
+with open("data/data.jsonl", "a", encoding="utf-8") as f:
     for item in chunked_data:
         json.dump(item, f)
         f.write("\n")
