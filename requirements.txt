@@ -1,0 +1,7 @@
+langchain==0.3.25
+langchain-groq==0.3.2
+selenium==4.33.0
+webdriver_manager==4.0.2
+langchain_huggingface==0.2.0
+langchain_community==0.3.24
+faiss-cpu==1.11.0
