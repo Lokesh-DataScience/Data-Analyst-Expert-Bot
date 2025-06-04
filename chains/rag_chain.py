@@ -2,8 +2,6 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_groq import ChatGroq
-from vector_db.faiss_db import create_faiss_vectorstore
-from langchain import hub
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -21,7 +19,7 @@ def build_chain():
 
     # Load prompt for retrieval QA chat
     retrieval_prompt = PromptTemplate(
-        input_variables=["context", "input"],
+        input_variables=["context", "input", "chat_history"],
         template="""
         You are a helpful AI assistant who specializes in data analysis. Your primary goal is to assist with topics related to data analysis, including (but not limited to): data cleaning, visualization, statistical analysis, machine learning for analytics, tools like Python, SQL, Excel, and business intelligence.
 
@@ -32,6 +30,9 @@ def build_chain():
         "I know quite a bit about data analysis! Would you like to explore a topic like data cleaning, visualization, or tools like Python and SQL?"
 
         Do not attempt to answer unrelated questions in detail.
+        Chat History:
+        {chat_history}  
+        
         Context:
         {context}
 

@@ -1,6 +1,10 @@
 import streamlit as st
 import requests
 from langchain_core.messages import AIMessage, HumanMessage
+import uuid
+
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = str(uuid.uuid4())
 
 API_URL = "http://localhost:8000/chat"  # Update if deployed
 
@@ -28,7 +32,8 @@ if user_input:
         with st.spinner("Thinking..."):
             res = requests.post(API_URL, json={
                 "question": user_input,
-                "chat_history": history_serialized
+                "chat_history": history_serialized,
+                "session_id": st.session_state["session_id"]
             })
 
         res.raise_for_status()
