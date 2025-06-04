@@ -4,8 +4,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from splitters import recursive_split
 from loaders.load_data import load_jsonl
+from langchain_core.documents import Document
 
 data = load_jsonl("data/data.jsonl")
 
@@ -25,8 +25,20 @@ def create_faiss_vectorstore(
         )
         print("Model loaded successfully.")
         print("Creating FAISS vectorstore...")
+        documents = [
+            Document(
+                page_content=item["content"],
+                metadata={
+                    "title": item.get("title", ""),
+                    "chunk_id": item.get("chunk_id", ""),
+                    "source": item.get("source", ""),
+                }
+            )
+            for item in data
+        ]
+
         vectorstore = FAISS.from_documents(
-            recursive_split.split_data_to_documents(data),
+            documents,
             embedding=hf
         )
         print("FAISS vectorstore created successfully.")
