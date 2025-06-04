@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from splitters import recursive_split
@@ -29,3 +33,6 @@ def create_faiss_vectorstore(
         vectorstore.save_local(output_dir)
     except Exception as e:
         print(f"Error creating FAISS vectorstore: {e}")
+
+if __name__ == "__main__":
+    create_faiss_vectorstore()
