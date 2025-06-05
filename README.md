@@ -30,8 +30,8 @@ graph TD
     B --> C[FastAPI Backend]
     C --> D[LLM (Groq)]
     C --> E[FAISS Vector DB]
-    E --> F[HuggingFace Embeddings]
     C --> G[Session Memory]
+    E --> F[HuggingFace Embeddings]
     H[Scrapers] --> E
 ```
 *User interacts with Streamlit UI, which talks to a FastAPI backend. The backend uses a RAG chain with a vector DB (FAISS), LLM (Groq), and session memory. Scrapers feed chunked data into the vector DB.*
