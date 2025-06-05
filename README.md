@@ -28,7 +28,7 @@
 graph TD
     A[User] -->|Chat| B[Streamlit UI]
     B -->|API Request| C[FastAPI Backend]
-    C -->|RAG Chain| D[LLM (Groq)]
+    C -->|RAG Chain| D["LLM (Groq)"]
     C -->|Retrieve| E[FAISS Vector DB]
     E -->|Embeddings| F[HuggingFace]
     C -->|Session| G[Session Memory]
