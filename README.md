@@ -26,14 +26,15 @@
 
 ```mermaid
 graph TD
-    A[User] -->|Chat| B[Streamlit UI]
-    B -->|API Request| C[FastAPI Backend]
-    C -->|RAG Chain| D[LLM (Groq)]
-    C -->|Retrieve| E[FAISS Vector DB]
-    E -->|Embeddings| F[HuggingFace]
-    C -->|Session| G[Session Memory]
-    H[Scrapers] -->|Chunked Data| E
+    A[User] --> B[Streamlit UI]
+    B --> C[FastAPI Backend]
+    C --> D[LLM (Groq)]
+    C --> E[FAISS Vector DB]
+    E --> F[HuggingFace Embeddings]
+    C --> G[Session Memory]
+    H[Scrapers] --> E
 ```
+*User interacts with Streamlit UI, which talks to a FastAPI backend. The backend uses a RAG chain with a vector DB (FAISS), LLM (Groq), and session memory. Scrapers feed chunked data into the vector DB.*
 
 ---
 
