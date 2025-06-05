@@ -8,10 +8,10 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 app = FastAPI()
 
-# Enable CORS for Streamlit
+# CORS for Streamlit
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Or restrict to ["http://localhost:8501"]
+    allow_origins=["*"],  # ["http://localhost:8501"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,14 +23,14 @@ class QueryRequest(BaseModel):
     chat_history: Optional[List[Dict]] = None
     session_id: Optional[str] = None
 
-# Initialize your retrieval chain once
+# Initialize retrieval chain once
 rag_chain = build_chain()
 
 @app.post("/chat")
 def chat_endpoint(request: QueryRequest):
     memory = get_memory(request.session_id or "default")
 
-    # Optionally, update memory with chat_history from frontend
+    # Update memory with chat_history from frontend
     if request.chat_history:
         # Clear and repopulate memory to sync with frontend
         memory.messages.clear()
@@ -40,7 +40,7 @@ def chat_endpoint(request: QueryRequest):
             elif msg["type"] == "ai":
                 memory.add_message(AIMessage(content=msg["content"]))
 
-    # Pass memory to the chain (if your chain supports it)
+    # Pass memory to the chain
     chat_history_str = "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
     response = rag_chain.invoke({
         "input": request.question,

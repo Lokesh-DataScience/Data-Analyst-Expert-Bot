@@ -17,7 +17,7 @@ def build_chain():
         search_kwargs={'k': 6, 'lambda_mult': 0.25}
     )
 
-    # Load prompt for retrieval QA chat
+    # prompt for retrieval QA chat
     retrieval_prompt = PromptTemplate(
         input_variables=["context", "input", "chat_history"],
         template="""
