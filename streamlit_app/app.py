@@ -13,7 +13,7 @@ st.set_page_config(page_title="RAG Chatbot with Groq", layout="wide")
 # Initialize memory
 st.session_state.setdefault("chat_history", [])
 
-st.title("💬 RAG Chatbot (Groq + FAISS + LangChain)")
+st.title("💬 Data Analyst Expert")
 
 user_input = st.chat_input("Ask me anything about the scraped data...")
 
