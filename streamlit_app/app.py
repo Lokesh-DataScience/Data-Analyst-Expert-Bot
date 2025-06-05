@@ -8,14 +8,14 @@ if "session_id" not in st.session_state:
 
 API_URL = "http://localhost:8000/chat"  # Update if deployed
 
-st.set_page_config(page_title="RAG Chatbot with Groq", layout="wide")
+st.set_page_config(page_title="Analyst Bot", layout="wide")
 
 # Initialize memory
 st.session_state.setdefault("chat_history", [])
 
 st.title("💬 Data Analyst Expert")
 
-user_input = st.chat_input("Ask me anything about the scraped data...")
+user_input = st.chat_input("Ask me anything about data analysis...")
 
 if user_input:
     # Append user's message to chat history
