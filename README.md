@@ -17,8 +17,8 @@
 
 ## 📸 Screenshots
 
-![Chat UI Example](https://user-images.githubusercontent.com/your-username/your-screenshot.png)
-*Chat with DataAnalystBot about Power BI, SQL, or data cleaning!*
+![Chat UI Example](![Image](https://github.com/user-attachments/assets/10652ec2-e53e-46a3-bb3c-13f2ccd7c34a))
+*Chat with DataAnalystBot about Power BI for data cleaning!*
 
 ---
 
@@ -64,7 +64,7 @@ All articles are scraped, chunked (500 chars), and stored in `data/data.jsonl` f
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/DataAnalystBot.git
+git clone https://github.com/Lokesh-DataScience/Data-Analyst-Expert-Bot.git
 cd DataAnalystBot
 ```
 
