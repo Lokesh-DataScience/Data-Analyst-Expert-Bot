@@ -5,6 +5,7 @@ from chains.rag_chain import build_chain
 from typing import List, Dict, Optional
 from memory.session_memory import get_memory
 from langchain_core.messages import HumanMessage, AIMessage
+from groq import Groq
 
 app = FastAPI()
 
@@ -22,6 +23,8 @@ class QueryRequest(BaseModel):
     question: str
     chat_history: Optional[List[Dict]] = None
     session_id: Optional[str] = None
+    image_base64: Optional[str] = None
+    image_type: Optional[str] = None
 
 # Initialize retrieval chain once
 rag_chain = build_chain()
@@ -39,7 +42,29 @@ def chat_endpoint(request: QueryRequest):
                 memory.add_message(HumanMessage(content=msg["content"]))
             elif msg["type"] == "ai":
                 memory.add_message(AIMessage(content=msg["content"]))
-
+    if request.image_base64:
+        client = Groq()
+        model = "meta-llama/llama-4-maverick-17b-128e-instruct"
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": request.question},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{request.image_type};base64,{request.image_base64}",
+                        },
+                    },
+                ],
+            }
+        ]
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model=model
+        )
+        answer = chat_completion.choices[0].message.content
+        return {"response": answer}
     # Pass memory to the chain
     chat_history_str = "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
     response = rag_chain.invoke({

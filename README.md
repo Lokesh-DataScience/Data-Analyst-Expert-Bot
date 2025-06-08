@@ -18,7 +18,7 @@
 ## 📸 Screenshots
 
 ![Chat UI Example](https://github.com/user-attachments/assets/10652ec2-e53e-46a3-bb3c-13f2ccd7c34a)
-*Chat with DataAnalystBot about Power BI for data cleaning!*
+*Chat with DataAnalystBot about Power BI for data analysis!*
 
 ---
 
