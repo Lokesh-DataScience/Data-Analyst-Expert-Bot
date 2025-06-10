@@ -7,6 +7,9 @@
 ## 🚀 Features
 
 - **Conversational AI**: Chat with an LLM (Llama 3 via Groq) about any data analysis topic.
+- **Image Understanding**: Upload images (e.g., charts, screenshots, or photos) and ask questions about them. The bot uses a multimodal LLM to analyze and respond.
+- **Image Upload Rate Limiting**: Each user can upload up to 3 images every 6 hours. If the limit is reached, only text questions are allowed until the window resets.
+- **Image Display in Chat**: Uploaded images are shown inline with your messages for easy reference.
 - **Retrieval-Augmented Generation (RAG)**: Answers are grounded in a curated, chunked knowledge base from top data science sources.
 - **Session Memory**: Each user session maintains its own chat history for context-aware conversations.
 - **Custom Vector Database**: Fast, semantic search over chunked documents using FAISS and HuggingFace embeddings.
@@ -119,7 +122,8 @@ streamlit run streamlit_app/app.py
 
 - Open [http://localhost:8501](http://localhost:8501) in your browser.
 - Ask questions about data analysis, tools, or techniques.
-- Each session is tracked for context-aware responses.
+- **To analyze an image:** Upload a jpg, jpeg, or png file and enter your question. The bot will analyze the image and respond.
+- **Note:** You can upload up to 3 images every 6 hours. If you reach the limit, you can still ask text questions.
 
 ---
 
