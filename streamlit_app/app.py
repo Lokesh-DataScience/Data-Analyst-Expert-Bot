@@ -54,6 +54,13 @@ else:
 uploads_left = max(0, 3 - len(st.session_state.image_upload_attempts)) # Calculate uploads left in the current 6-hour window
 st.caption(f"🖼️ Uploads remaining in this 6-hour window: {uploads_left}")
 
+uploaded_csv = st.file_uploader("Upload a CSV file (optional)", type=["csv"])
+csv_b64 = None
+csv_filename = None
+if uploaded_csv:
+    csv_b64 = base64.b64encode(uploaded_csv.read()).decode('utf-8')
+    csv_filename = uploaded_csv.name
+
 user_input = st.chat_input("Ask me anything about data analysis...")
 
 def encode_image_file(file):
@@ -92,7 +99,11 @@ if user_input:
                 "session_id": st.session_state["session_id"],
             }
             # Include image data if available
-            if image_b64:
+            if csv_b64 and csv_filename:
+                payload["csv_base64"] = csv_b64
+                payload["csv_filename"] = csv_filename
+                api_url = "http://localhost:8000/csv-upload"
+            elif image_b64:
                 payload["image_base64"] = image_b64
                 payload["image_type"] = image_type
                 api_url = "http://localhost:8000/image-upload"
