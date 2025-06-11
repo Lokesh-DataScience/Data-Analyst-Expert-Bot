@@ -95,7 +95,10 @@ if user_input:
             if image_b64:
                 payload["image_base64"] = image_b64
                 payload["image_type"] = image_type
-            res = requests.post(API_URL, json=payload) # Send the request to the API
+                api_url = "http://localhost:8000/image-upload"
+            else:
+                api_url = "http://localhost:8000/chat"
+            res = requests.post(api_url, json=payload) # Send the request to the API
         res.raise_for_status() # Raise an error for bad responses
         answer = res.json().get("response", "⚠️ No answer returned.") # Get the response from the API
         st.session_state.chat_history.append(AIMessage(content=answer)) # Append AI response to chat history

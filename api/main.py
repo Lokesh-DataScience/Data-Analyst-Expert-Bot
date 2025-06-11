@@ -23,8 +23,10 @@ class QueryRequest(BaseModel):
     question: str
     chat_history: Optional[List[Dict]] = None
     session_id: Optional[str] = None
-    image_base64: Optional[str] = None
-    image_type: Optional[str] = None
+
+class ImageQueryRequest(QueryRequest):
+    image_base64: str
+    image_type: str
 
 # Initialize retrieval chain once
 rag_chain = build_chain()
@@ -42,29 +44,7 @@ def chat_endpoint(request: QueryRequest):
                 memory.add_message(HumanMessage(content=msg["content"]))
             elif msg["type"] == "ai":
                 memory.add_message(AIMessage(content=msg["content"]))
-    if request.image_base64:
-        client = Groq()
-        model = "meta-llama/llama-4-maverick-17b-128e-instruct"
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": request.question},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{request.image_type};base64,{request.image_base64}",
-                        },
-                    },
-                ],
-            }
-        ]
-        chat_completion = client.chat.completions.create(
-            messages=messages,
-            model=model
-        )
-        answer = chat_completion.choices[0].message.content
-        return {"response": answer}
+
     # Pass memory to the chain
     chat_history_str = "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
     response = rag_chain.invoke({
@@ -72,3 +52,28 @@ def chat_endpoint(request: QueryRequest):
         "chat_history": chat_history_str
     })
     return {"response": response.get("answer", "No response")}
+
+@app.post("/image-upload")
+def image_upload_endpoint(request: ImageQueryRequest):
+    client = Groq()
+    model = "meta-llama/llama-4-maverick-17b-128e-instruct"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": request.question},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{request.image_type};base64,{request.image_base64}",
+                    },
+                },
+            ],
+        }
+    ]
+    chat_completion = client.chat.completions.create(
+        messages=messages,
+        model=model
+    )
+    answer = chat_completion.choices[0].message.content
+    return {"response": answer}
