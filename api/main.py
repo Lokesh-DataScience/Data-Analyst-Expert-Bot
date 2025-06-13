@@ -10,6 +10,8 @@ import base64
 import tempfile
 import os
 from loaders.load_csv import load_csv
+from loaders.load_pdf import PyPDFLoader, ingest_pdf
+
 
 app = FastAPI()
 
@@ -35,6 +37,10 @@ class ImageQueryRequest(QueryRequest):
 class CSVQueryRequest(QueryRequest):
     csv_base64: str
     csv_filename: str
+
+class PdfQueryRequest(QueryRequest):
+    pdf_base64: str
+    pdf_filename: str
 
 def update_memory_and_history(memory, chat_history):
     if chat_history:
@@ -127,4 +133,33 @@ def csv_upload_endpoint(request: CSVQueryRequest):
         "context": csv_context
     })
     # After getting csv_context (for csv-upload)
+    return {"response": response.content if hasattr(response, "content") else str(response)}
+
+@app.post("/pdf-upload")
+def pdf_upload_endpoint(request: PdfQueryRequest):
+    # Decode and save the PDF file temporarily
+    pdf_bytes = base64.b64decode(request.pdf_base64)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+        tmp_pdf.write(pdf_bytes)
+        tmp_pdf_path = tmp_pdf.name
+
+    # Load PDF content using PyPDFLoader
+    loader = PyPDFLoader(tmp_pdf_path)
+    pdf_docs = loader.load()
+    os.unlink(tmp_pdf_path)  # Clean up temp file
+
+    # Prepare context from PDF content
+    pdf_context = "\n".join([doc.page_content for doc in pdf_docs])
+
+    # Prepare chat history
+    memory = get_memory(request.session_id or "default")
+    chat_history_str = update_memory_and_history(memory, request.chat_history)
+
+    # Use RAG chain with PDF context
+    contextual_chain = build_contextual_chain()
+    response = contextual_chain.invoke({
+        "input": request.question,
+        "chat_history": chat_history_str,
+        "context": pdf_context
+    })
     return {"response": response.content if hasattr(response, "content") else str(response)}

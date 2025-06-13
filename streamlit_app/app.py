@@ -55,11 +55,18 @@ uploads_left = max(0, 3 - len(st.session_state.image_upload_attempts)) # Calcula
 st.caption(f"🖼️ Uploads remaining in this 6-hour window: {uploads_left}")
 
 uploaded_csv = st.file_uploader("Upload a CSV file (optional)", type=["csv"])
+uploaded_pdf = st.file_uploader("Upload a PDF file (optional)", type=["pdf"])
 csv_b64 = None
 csv_filename = None
 if uploaded_csv:
     csv_b64 = base64.b64encode(uploaded_csv.read()).decode('utf-8')
     csv_filename = uploaded_csv.name
+
+pdf_b64 = None
+pdf_filename = None
+if uploaded_pdf:
+    pdf_b64 = base64.b64encode(uploaded_pdf.read()).decode('utf-8')
+    pdf_filename = uploaded_pdf.name
 
 user_input = st.chat_input("Ask me anything about data analysis...")
 
@@ -107,6 +114,10 @@ if user_input:
                 payload["image_base64"] = image_b64
                 payload["image_type"] = image_type
                 api_url = "http://localhost:8000/image-upload"
+            elif pdf_b64 and pdf_filename:
+                payload["pdf_base64"] = pdf_b64
+                payload["pdf_filename"] = pdf_filename
+                api_url = "http://localhost:8000/pdf-upload"
             else:
                 api_url = "http://localhost:8000/chat"
             res = requests.post(api_url, json=payload) # Send the request to the API
