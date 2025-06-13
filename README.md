@@ -11,6 +11,7 @@
 - **Image Upload Rate Limiting**: Each user can upload up to 3 images every 6 hours. If the limit is reached, only text questions are allowed until the window resets.
 - **Image Display in Chat**: Uploaded images are shown inline with your messages for easy reference.
 - **CSV Data Analysis**: Upload a CSV file and ask questions about its content. The bot uses a dedicated endpoint and LLM prompt to analyze the uploaded CSV and answer your queries.
+- **PDF Data Analysis**: Upload a PDF file and ask questions about its content. The bot extracts text from the PDF and uses it as context for the LLM, enabling document-aware responses.
 - **Retrieval-Augmented Generation (RAG)**: Answers are grounded in a curated, chunked knowledge base from top data science sources.
 - **Session Memory**: Each user session maintains its own chat history for context-aware conversations.
 - **Custom Vector Database**: Fast, semantic search over chunked documents using FAISS and HuggingFace embeddings.
@@ -125,6 +126,7 @@ streamlit run streamlit_app/app.py
 - Ask questions about data analysis, tools, or techniques.
 - **To analyze an image:** Upload a jpg, jpeg, or png file and enter your question. The bot will analyze the image and respond.
 - **To analyze a CSV:** Upload a CSV file and ask a question about its content. The bot will use the CSV data as context for its answer.
+- **To analyze a PDF:** Upload a PDF file and ask a question about its content. The bot will use the PDF text as context for its answer.
 - **Note:** You can upload up to 3 images every 6 hours. If you reach the limit, you can still ask text questions.
 
 ---
