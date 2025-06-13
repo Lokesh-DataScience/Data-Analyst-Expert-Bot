@@ -144,7 +144,8 @@ DataAnalystBot/
 │   └── data.jsonl
 ├── loaders/              # Data loading utilities
 │   ├── load_data.py
-|   └── load_csv.py
+|   ├── load_csv.py
+|   └── load_pdf.py
 ├── memory/               # Session memory management
 │   └── session_memory.py
 ├── scrapers/             # Web scrapers for sources
