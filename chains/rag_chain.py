@@ -1,26 +1,21 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from langchain.prompts import PromptTemplate
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.runnables.base import RunnableSequence
+from vector_db.faiss_db import EMBEDDING
 
-def build_chain():
-    embedding = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": False}
-    )
-    vectorstore = FAISS.load_local("vectorstore_data", embedding, allow_dangerous_deserialization=True)
-    retriever = vectorstore.as_retriever(
-        search_type="mmr",
-        search_kwargs={'k': 6, 'lambda_mult': 0.25}
-    )
+LLM = ChatGroq(
+    model_name="meta-llama/llama-4-scout-17b-16e-instruct",
+    temperature=0.1,
+    max_tokens=1024
+)
 
-    # prompt for retrieval QA chat
-    retrieval_prompt = PromptTemplate(
-        input_variables=["context", "input", "chat_history"],
-        template="""
+TEMPLATE = """
         You are a helpful AI assistant who specializes in data analysis. Your primary goal is to assist with topics related to data analysis, including (but not limited to): data cleaning, visualization, statistical analysis, machine learning for analytics, tools like Python, SQL, Excel, and business intelligence.
 
         If the user's input is clearly unrelated to data analysis (e.g., topics like cooking, history, movies, etc.), politely respond with:
@@ -40,25 +35,39 @@ def build_chain():
         {input}
 
         Answer:"""
-    )
 
+INPUT_VARIABLES = ["context", "input", "chat_history"]
+
+def build_chain():
+    vectorstore = FAISS.load_local("vectorstore_data", EMBEDDING, allow_dangerous_deserialization=True)
+    retriever = vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={'k': 6, 'lambda_mult': 0.25}
+    )
+    # prompt for retrieval QA chat
+    retrieval_prompt = PromptTemplate(
+        input_variables=INPUT_VARIABLES,
+        template=TEMPLATE
+    )
     # Initialize Groq LLM
-    llm = ChatGroq(
-        model_name="llama3-70b-8192",
-        temperature=0.1,
-        max_tokens=1024
-    )
-
+    llm = LLM
     # Create a combine_docs_chain that prepares the prompt for the LLM
     combine_docs_chain = create_stuff_documents_chain(
         llm=llm,
         prompt=retrieval_prompt
     )
-
     # Create the retrieval chain
     chain = create_retrieval_chain(
         retriever=retriever,
         combine_docs_chain=combine_docs_chain
     )
-
     return chain
+
+def build_contextual_chain():
+    contextual_prompt = PromptTemplate(
+        input_variables=INPUT_VARIABLES,
+        template=TEMPLATE
+    )
+    llm = LLM
+    return RunnableSequence(contextual_prompt, llm)
+

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from chains.rag_chain import build_chain
+from chains.rag_chain import build_chain, build_contextual_chain
 from typing import List, Dict, Optional
 from memory.session_memory import get_memory
 from langchain_core.messages import HumanMessage, AIMessage
@@ -36,25 +36,25 @@ class CSVQueryRequest(QueryRequest):
     csv_base64: str
     csv_filename: str
 
+def update_memory_and_history(memory, chat_history):
+    if chat_history:
+        memory.messages.clear()
+        for msg in chat_history:
+            if msg["type"] == "human":
+                memory.add_message(HumanMessage(content=msg["content"]))
+            elif msg["type"] == "ai":
+                memory.add_message(AIMessage(content=msg["content"]))
+    chat_history_str = "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
+    return chat_history_str
+
 # Initialize retrieval chain once
 rag_chain = build_chain()
 
 @app.post("/chat")
 def chat_endpoint(request: QueryRequest):
     memory = get_memory(request.session_id or "default")
-
-    # Update memory with chat_history from frontend
-    if request.chat_history:
-        # Clear and repopulate memory to sync with frontend
-        memory.messages.clear()
-        for msg in request.chat_history:
-            if msg["type"] == "human":
-                memory.add_message(HumanMessage(content=msg["content"]))
-            elif msg["type"] == "ai":
-                memory.add_message(AIMessage(content=msg["content"]))
-
     # Pass memory to the chain
-    chat_history_str = "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
+    chat_history_str = update_memory_and_history(memory, request.chat_history)
     response = rag_chain.invoke({
         "input": request.question,
         "chat_history": chat_history_str
@@ -63,13 +63,14 @@ def chat_endpoint(request: QueryRequest):
 
 @app.post("/image-upload")
 def image_upload_endpoint(request: ImageQueryRequest):
+    # Step 1: Get image description from Groq multimodal LLM
     client = Groq()
     model = "meta-llama/llama-4-maverick-17b-128e-instruct"
     messages = [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": request.question},
+                {"type": "text", "text": "Describe this image for data analysis:"},
                 {
                     "type": "image_url",
                     "image_url": {
@@ -83,8 +84,22 @@ def image_upload_endpoint(request: ImageQueryRequest):
         messages=messages,
         model=model
     )
-    answer = chat_completion.choices[0].message.content
-    return {"response": answer}
+    image_context = chat_completion.choices[0].message.content
+
+    # Step 2: Use build_contextual_chain with image context
+    contextual_chain = build_contextual_chain()
+
+    memory = get_memory(request.session_id or "default")
+
+    chat_history_str = update_memory_and_history(memory, request.chat_history)
+
+    response = contextual_chain.invoke({
+        "input": request.question,
+        "chat_history": chat_history_str,
+        "context": image_context
+    })
+    # After getting image_context (for image-upload)
+    return {"response": response.content if hasattr(response, "content") else str(response)}
 
 @app.post("/csv-upload")
 def csv_upload_endpoint(request: CSVQueryRequest):
@@ -101,20 +116,15 @@ def csv_upload_endpoint(request: CSVQueryRequest):
     # Prepare context from CSV content
     csv_context = "\n".join([doc.page_content for doc in csv_docs])
 
-    # Prepare the prompt for the LLM (similar to image-upload)
-    client = Groq()
-    model = "meta-llama/llama-4-scout-17b-16e-instruct"
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": f"{request.question}\n\nHere is the CSV data:\n{csv_context}"}
-            ],
-        }
-    ]
-    chat_completion = client.chat.completions.create(
-        messages=messages,
-        model=model
-    )
-    answer = chat_completion.choices[0].message.content
-    return {"response": answer}
+    contextual_chain = build_contextual_chain()
+
+    memory = get_memory(request.session_id or "default")
+    chat_history_str = update_memory_and_history(memory, request.chat_history)
+
+    response = contextual_chain.invoke({
+        "input": request.question,
+        "chat_history": chat_history_str,
+        "context": csv_context
+    })
+    # After getting csv_context (for csv-upload)
+    return {"response": response.content if hasattr(response, "content") else str(response)}

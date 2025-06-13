@@ -9,23 +9,18 @@ from langchain_core.documents import Document
 # vector_db/faiss_db.py
 data = load_jsonl("data/data.jsonl")
 
-def create_faiss_vectorstore(
-    output_dir="vectorstore_data",
+EMBEDDING = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2",
-    device="cpu"
-):
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": False}
+)
+
+def create_faiss_vectorstore(output_dir="vectorstore_data"):
     """
     Create a FAISS vectorstore from JSONL data using HuggingFace embeddings.
     """
     try:
         print("Loading model...")
-        model_kwargs = {'device': device}
-        encode_kwargs = {'normalize_embeddings': False}
-        hf = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs=model_kwargs, # Device configuration
-            encode_kwargs=encode_kwargs # Encoding options
-        )
         print("Model loaded successfully.")
         print("Creating FAISS vectorstore...")
         
@@ -43,7 +38,7 @@ def create_faiss_vectorstore(
         # Ensure documents are properly formatted
         vectorstore = FAISS.from_documents(
             documents,
-            embedding=hf
+            embedding=EMBEDDING
         )
         print("FAISS vectorstore created successfully.")
         # Save the vectorstore to disk
