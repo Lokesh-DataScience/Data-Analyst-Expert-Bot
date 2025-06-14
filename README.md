@@ -6,14 +6,16 @@
 
 ## 🚀 Features
 
-- **Conversational AI**: Chat with an LLM (Llama 3 via Groq) about any data analysis topic.
-- **Image Understanding**: Upload images (e.g., charts, screenshots, or photos) and ask questions about them. The bot uses a multimodal LLM to analyze and respond.
-- **Image Upload Rate Limiting**: Each user can upload up to 3 images every 6 hours. If the limit is reached, only text questions are allowed until the window resets.
-- **Image Display in Chat**: Uploaded images are shown inline with your messages for easy reference.
-- **CSV Data Analysis**: Upload a CSV file and ask questions about its content. The bot uses a dedicated endpoint and LLM prompt to analyze the uploaded CSV and answer your queries.
+- **Conversational AI**: Chat with an LLM (Llama 3/4 via Groq) about any data analysis topic.
+- **Image Understanding**: Upload images (e.g., charts, screenshots, or photos) and ask questions about them. The bot uses a multimodal LLM to analyze and respond, then grounds the answer using your chat history and knowledge base.
+- **CSV Data Analysis**: Upload a CSV file and ask questions about its content. The bot uses the CSV content as context for the LLM, providing data-aware answers.
 - **PDF Data Analysis**: Upload a PDF file and ask questions about its content. The bot extracts text from the PDF and uses it as context for the LLM, enabling document-aware responses.
+- **File Caching**: Uploaded CSV, image, and PDF data are cached for each session, enabling fast, context-aware follow-up questions without re-uploading or re-processing files.
+- **Image Upload Rate Limiting**: Each user can upload up to 3 images every 6 hours. If the limit is reached, only text, CSV, or PDF questions are allowed until the window resets.
+- **Image Display in Chat**: Uploaded images are shown inline with your messages for easy reference.
 - **Retrieval-Augmented Generation (RAG)**: Answers are grounded in a curated, chunked knowledge base from top data science sources.
 - **Session Memory**: Each user session maintains its own chat history for context-aware conversations.
+- **Recent Chats**: All conversations are saved and can be resumed from the sidebar.
 - **Custom Vector Database**: Fast, semantic search over chunked documents using FAISS and HuggingFace embeddings.
 - **Modern UI**: Built with Streamlit for a clean, interactive chat experience.
 - **Extensible Scrapers**: Easily add new data sources with modular web scrapers.
@@ -31,13 +33,16 @@
 
 ```mermaid
 graph TD
-    A[User] -->|Chat| B[Streamlit UI]
+    A[User] --> B[Streamlit UI]
     B -->|API Request| C[FastAPI Backend]
-    C -->|RAG Chain| D["LLM (Groq)"]
-    C -->|Retrieve| E[FAISS Vector DB]
-    E -->|Embeddings| F[HuggingFace]
+    C -->|Text, CSV, PDF, Image| D[LLM (Groq)]
+    C -->|RAG Chain| E[FAISS Vector DB]
+    E --> F[HuggingFace Embeddings]
     C -->|Session| G[Session Memory]
+    C -->|Cache| I[DiskCache]
+    B -->|Uploads| J[File Caching]
     H[Scrapers] -->|Chunked Data| E
+    C -->|Recent Chats| K[Recent Chat Store]
 ```
 
 ---
@@ -56,11 +61,12 @@ All articles are scraped, chunked (500 chars), and stored in `data/data.jsonl` f
 
 - **Frontend**: [Streamlit](https://streamlit.io/)
 - **Backend**: [FastAPI](https://fastapi.tiangolo.com/)
-- **LLM**: [Groq Llama 3](https://groq.com/)
+- **LLM**: [Groq Llama 3 & Multimodal Llama 4](https://groq.com/)
 - **Vector DB**: [FAISS](https://github.com/facebookresearch/faiss)
 - **Embeddings**: [HuggingFace Transformers](https://huggingface.co/)
 - **Web Scraping**: [Selenium](https://selenium.dev/)
 - **Session Memory**: In-memory per-session chat history
+- **Caching**: DiskCache and Streamlit cache for fast file and context retrieval
 
 ---
 
@@ -128,6 +134,7 @@ streamlit run streamlit_app/app.py
 - **To analyze a CSV:** Upload a CSV file and ask a question about its content. The bot will use the CSV data as context for its answer.
 - **To analyze a PDF:** Upload a PDF file and ask a question about its content. The bot will use the PDF text as context for its answer.
 - **Note:** You can upload up to 3 images every 6 hours. If you reach the limit, you can still ask text questions.
+- **Resume conversations:** Select any recent chat from the sidebar to continue where you left off.
 
 ---
 
