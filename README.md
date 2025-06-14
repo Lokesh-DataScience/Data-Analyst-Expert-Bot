@@ -33,26 +33,46 @@
 
 ```mermaid
 flowchart TD
-    subgraph "User Session"
-        A[User] -->|Uploads/Questions| B[Streamlit UI]
-        B -->|API Request| C[FastAPI Backend]
+    subgraph "👤 User Interface"
+        A[👤 User] -->|📤 Uploads Files & Asks Questions| B[🖥️ Streamlit Web App]
     end
 
-    subgraph "Backend"
-        C -->|Text, CSV, PDF, Image| D[LLM - Groq]
-        C -->|RAG Chain| E[FAISS Vector DB]
-        E --> F[HuggingFace Embeddings]
-        C -->|Session| G[Session Memory]
-        C -->|Cache| I[DiskCache]
-        B -->|Uploads| J[File Caching]
-        H[Scrapers] -->|Chunked Data| E
-        C -->|Recent Chats| K[Recent Chat Store]
+    subgraph "🔄 Processing Layer"
+        B -->|📡 Sends Request| C[⚡ FastAPI Server]
+        C -->|💾 Stores Uploads| J[📁 File Storage]
+        C -->|🔍 Retrieves Context| E[🗄️ Vector Database]
+        C -->|🧠 Generates Answer| D[🤖 AI Model - Groq]
     end
 
-    %% Output flow
-    D -->|LLM Response| C
-    C -->|Answer/Context| B
-    B -->|Display| A
+    subgraph "💾 Data Storage"
+        E[🗄️ FAISS Vector Database]
+        F[🔤 HuggingFace Embeddings]
+        G[💭 Session Memory]
+        I[⚡ Cache Storage]
+        K[💬 Chat History]
+        H[🕷️ Web Scrapers]
+    end
+
+    %% Data Flow
+    E --> F
+    H -->|📊 Adds Scraped Data| E
+    C -->|💾 Saves Session| G
+    C -->|⚡ Caches Results| I
+    C -->|💬 Stores Chats| K
+    
+    %% Response Flow
+    D -->|✅ AI Response| C
+    C -->|📋 Final Answer| B
+    B -->|📺 Shows Result| A
+
+    %% Styling
+    classDef userStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef processStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef storageStyle fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    
+    class A,B userStyle
+    class C,D,J processStyle
+    class E,F,G,H,I,K storageStyle
 ```
 
 ---
