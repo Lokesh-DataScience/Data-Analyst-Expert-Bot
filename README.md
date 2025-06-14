@@ -32,30 +32,14 @@
 ## 🏗️ Architecture Overview
 
 ```mermaid
-graph TD
-    A[User] --> B[Streamlit UI]
-    B -->|API Request| C[FastAPI Backend]
-    C -->|Text, CSV, PDF, Image| D[LLM - Groq]
-    C -->|RAG Chain| E[FAISS Vector DB]
-    E --> F[HuggingFace Embeddings]
-    C -->|Session| G[Session Memory]
-    C -->|Cache| I[DiskCache]
-    B -->|Uploads| J[File Caching]
-    H[Scrapers] -->|Chunked Data| E
-    C -->|Recent Chats| K[Recent Chat Store]
-    C -->|Trigger| H
-```
-## 🤖 Output Generation
-
-```mermaid
-graph TD
-    subgraph User Session
+flowchart TD
+    subgraph "User Session"
         A[User] -->|Uploads/Questions| B[Streamlit UI]
         B -->|API Request| C[FastAPI Backend]
     end
 
-    subgraph Backend
-        C -->|Text, CSV, PDF, Image| D[LLM (Groq)]
+    subgraph "Backend"
+        C -->|Text, CSV, PDF, Image| D[LLM - Groq]
         C -->|RAG Chain| E[FAISS Vector DB]
         E --> F[HuggingFace Embeddings]
         C -->|Session| G[Session Memory]
@@ -69,6 +53,7 @@ graph TD
     D -->|LLM Response| C
     C -->|Answer/Context| B
     B -->|Display| A
+```
 
 ---
 
