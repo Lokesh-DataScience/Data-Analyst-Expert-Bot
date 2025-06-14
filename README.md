@@ -49,7 +49,6 @@ graph TD
 
 ```mermaid
 graph TD
-graph TD
     %% User Journey
     A[👤 User Types Question] --> B[💻 Web Interface]
     B --> C[🔧 Backend Server]
