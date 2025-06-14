@@ -35,7 +35,7 @@
 graph TD
     A[User] --> B[Streamlit UI]
     B -->|API Request| C[FastAPI Backend]
-    C -->|Text, CSV, PDF, Image| D[LLM (Groq)]
+    C -->|Text, CSV, PDF, Image| D[LLM - Groq]
     C -->|RAG Chain| E[FAISS Vector DB]
     E --> F[HuggingFace Embeddings]
     C -->|Session| G[Session Memory]
@@ -43,6 +43,7 @@ graph TD
     B -->|Uploads| J[File Caching]
     H[Scrapers] -->|Chunked Data| E
     C -->|Recent Chats| K[Recent Chat Store]
+    C -->|Trigger| H
 ```
 
 ---
