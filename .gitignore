@@ -1,5 +1,10 @@
+# Ignore env files
 .env\
 .env
 
+# Ignore virtual env
 .venv\
 .venv
+
+# Ignore diskcache
+.cache/

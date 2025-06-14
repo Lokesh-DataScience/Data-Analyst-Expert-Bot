@@ -9,53 +9,123 @@ from PIL import Image
 import io
 import hashlib
 
-# Ensure the session ID is set for tracking
+# Set page config first, before any other Streamlit commands
+st.set_page_config(page_title="Analyst Bot", layout="wide")
+
+# Initialize session state variables
 if "session_id" not in st.session_state:
     st.session_state["session_id"] = str(uuid.uuid4())
 
-# Initialize session state for image upload attempts and last uploaded image
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
+
 if "image_upload_attempts" not in st.session_state:
     st.session_state.image_upload_attempts = []
 
-# Initialize session state for last uploaded image name
 if "last_uploaded_image_name" not in st.session_state:
     st.session_state.last_uploaded_image_name = None
 
-# Clear timestamps older than 6 hours
-cutoff_time = datetime.now() - timedelta(hours=6) # 6-hour window for image uploads
+@st.cache_data(ttl=120)  # cache for 2 minutes
+def get_chat_history_for_session(session_id):
+    try:
+        res = requests.get(f"http://localhost:8000/recent-chats/{session_id}")
+        res.raise_for_status()
+        return res.json().get("chat_history", [])
+    except Exception as e:
+        st.warning(f"⚠️ Could not load recent chat history: {e}")
+        return []
+
+@st.cache_data(ttl=60)  # cache for 60 seconds
+def get_recent_chat_titles():
+    try:
+        titles_res = requests.get("http://localhost:8000/recent-chat-titles")
+        titles_res.raise_for_status()
+        return titles_res.json().get("sessions", [])
+    except Exception as e:
+        st.sidebar.error(f"Failed to load recent chats: {e}")
+        return []
+
+def encode_image_file(file):
+    """Encodes an image file to base64."""
+    return base64.b64encode(file.read()).decode('utf-8')
+
+def load_chat_history_from_backend(session_id):
+    """Load and format chat history from backend"""
+    full_history = get_chat_history_for_session(session_id)
+    formatted_history = []
+    
+    for msg in full_history:
+        if msg["type"] == "ai":
+            formatted_history.append({
+                "type": "ai",
+                "content": msg["content"]
+            })
+        elif msg["type"] == "human":
+            formatted_history.append({
+                "type": "human",
+                "content": msg["content"],
+                "image": msg.get("file", {}).get("base64") if "file" in msg else msg.get("image"),
+                "image_type": msg.get("file", {}).get("format") if "file" in msg else msg.get("image_type")
+            })
+    return formatted_history
+
+# Load recent chat history from the backend on first load
+if not st.session_state["chat_history"]:
+    st.session_state["chat_history"] = load_chat_history_from_backend(st.session_state["session_id"])
+
+# Clear old image upload timestamps (older than 6 hours)
+cutoff_time = datetime.now() - timedelta(hours=6)
 st.session_state.image_upload_attempts = [
-    ts for ts in st.session_state.image_upload_attempts if ts > cutoff_time # Only keep recent timestamps
+    ts for ts in st.session_state.image_upload_attempts if ts > cutoff_time
 ]
 
-image_upload_limit_reached = len(st.session_state.image_upload_attempts) >= 3 # Limit to 3 uploads per 6 hours
+# Check if image upload limit is reached
+image_upload_limit_reached = len(st.session_state.image_upload_attempts) >= 3
 
-# Define the API URL for the chat service
-API_URL = "http://localhost:8000/chat"  # Update if deployed
+# Sidebar for recent chats
+with st.sidebar:
+    st.header("🕓 Recent Chats")
+    
+    # New Chat button
+    if st.button("➕ New Chat", type="primary", use_container_width=True):
+        st.session_state["session_id"] = str(uuid.uuid4())
+        st.session_state["chat_history"] = []
+        st.session_state["last_uploaded_image_name"] = None
+        st.rerun()
+    
+    st.divider()
+    
+    session_titles = get_recent_chat_titles()
+    
+    for chat in session_titles:
+        if st.button(chat["title"][:40], key=chat["session_id"]):
+            st.session_state["session_id"] = chat["session_id"]
+            st.session_state["chat_history"] = load_chat_history_from_backend(chat["session_id"])
+            st.rerun()
 
-# Set up the Streamlit page configuration
-st.set_page_config(page_title="Analyst Bot", layout="wide")
-
-# Initialize streamlit memory
-st.session_state.setdefault("chat_history", [])
-
+# Main app title
 st.title("💬 Data Analyst Expert")
 
+# File upload sections
 uploaded_image = None
 if image_upload_limit_reached:
-    st.warning("⏳ You’ve reached the image upload limit (3 per 6 hours). Try again later.")
+    st.warning("⏳ You've reached the image upload limit (3 per 6 hours). Try again later.")
 else:
     uploaded_image = st.file_uploader("Upload an image (optional)", type=["jpg", "jpeg", "png"])
+    
+    # Track new image uploads
+    if uploaded_image and uploaded_image.name != st.session_state.last_uploaded_image_name:
+        st.session_state.image_upload_attempts.append(datetime.now())
+        st.session_state.last_uploaded_image_name = uploaded_image.name
 
-    # Only count a new upload if it's a different file than before
-    if uploaded_image and uploaded_image.name != st.session_state.last_uploaded_image_name: 
-        st.session_state.image_upload_attempts.append(datetime.now()) # Record the upload time
-        st.session_state.last_uploaded_image_name = uploaded_image.name # Update the last uploaded image name
-
-uploads_left = max(0, 3 - len(st.session_state.image_upload_attempts)) # Calculate uploads left in the current 6-hour window
+uploads_left = max(0, 3 - len(st.session_state.image_upload_attempts))
 st.caption(f"🖼️ Uploads remaining in this 6-hour window: {uploads_left}")
 
+# CSV and PDF upload
 uploaded_csv = st.file_uploader("Upload a CSV file (optional)", type=["csv"])
 uploaded_pdf = st.file_uploader("Upload a PDF file (optional)", type=["pdf"])
+
+# Prepare file data
 csv_b64 = None
 csv_filename = None
 if uploaded_csv:
@@ -68,18 +138,16 @@ if uploaded_pdf:
     pdf_b64 = base64.b64encode(uploaded_pdf.read()).decode('utf-8')
     pdf_filename = uploaded_pdf.name
 
+# Chat input
 user_input = st.chat_input("Ask me anything about data analysis...")
 
-def encode_image_file(file):
-    """Encodes an image file to base64."""
-    return base64.b64encode(file.read()).decode('utf-8') 
-
+# Process user input
 if user_input:
-    # Encode image only if newly uploaded
+    # Encode image if uploaded
     image_b64 = encode_image_file(uploaded_image) if uploaded_image else None
     image_type = uploaded_image.type if uploaded_image else None
 
-    # Append user message and image (if any) to chat history
+    # Add user message to chat history
     st.session_state.chat_history.append({
         "type": "human",
         "content": user_input,
@@ -87,25 +155,35 @@ if user_input:
         "image_type": image_type
     })
 
-    # Serialize history for API (ignore images for now)
-    history_serialized = [
-        {"type": msg["type"], "content": msg["content"]} # Include image metadata
-        #  if "image" in msg  # Only include image if it exists
-        if isinstance(msg, dict)
-        else {"type": "ai", "content": msg.content}
-        for msg in st.session_state.chat_history # Convert AIMessage to dict
-    ]
+    # Prepare chat history for API (serialize properly)
+    history_serialized = []
+    for msg in st.session_state.chat_history:
+        if isinstance(msg, dict):
+            history_serialized.append({
+                "type": msg["type"],
+                "content": msg["content"]
+            })
+        elif isinstance(msg, AIMessage):
+            history_serialized.append({
+                "type": "ai",
+                "content": msg.content
+            })
+        elif isinstance(msg, HumanMessage):
+            history_serialized.append({
+                "type": "human",
+                "content": msg.content
+            })
 
     try:
-        # Send the request to the chat API
         with st.spinner("Thinking..."):
-            # Prepare the payload for the API request
+            # Prepare payload
             payload = {
                 "question": user_input,
-                "chat_history": history_serialized,
                 "session_id": st.session_state["session_id"],
+                "chat_history": history_serialized
             }
-            # Include image data if available
+            
+            # Determine API endpoint based on uploaded files
             if csv_b64 and csv_filename:
                 payload["csv_base64"] = csv_b64
                 payload["csv_filename"] = csv_filename
@@ -120,35 +198,57 @@ if user_input:
                 api_url = "http://localhost:8000/pdf-upload"
             else:
                 api_url = "http://localhost:8000/chat"
-            res = requests.post(api_url, json=payload) # Send the request to the API
-        res.raise_for_status() # Raise an error for bad responses
-        answer = res.json().get("response", "⚠️ No answer returned.") # Get the response from the API
-        st.session_state.chat_history.append(AIMessage(content=answer)) # Append AI response to chat history
 
+            # Send request to API
+            res = requests.post(api_url, json=payload)
+            res.raise_for_status()
+            
+            answer = res.json().get("response", "⚠️ No answer returned.")
+            
+            # Add AI response to chat history
+            st.session_state.chat_history.append({
+                "type": "ai",
+                "content": answer
+            })
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"❌ API Error: {e}"
+        st.session_state.chat_history.append({
+            "type": "ai",
+            "content": error_msg
+        })
     except Exception as e:
-        st.session_state.chat_history.append(AIMessage(content=f"❌ Error: {e}")) # Append error message to chat history
-
-# Display conversation
-shown_images = set() # Set to track shown images by their hash
+        error_msg = f"❌ Unexpected Error: {e}"
+        st.session_state.chat_history.append({
+            "type": "ai",
+            "content": error_msg
+        })
 
 # Display chat history
+shown_images = set()
+
 for msg in st.session_state.chat_history:
-    # Check if the message is a human message with an image
-    if isinstance(msg, dict) and msg.get("type") == "human":
-        with st.chat_message("user"): # Display user message
-            st.markdown(msg["content"]) 
-            
-            if msg.get("image"):
-                # Hash the image content to detect uniqueness
-                image_hash = hashlib.md5(msg["image"].encode()).hexdigest() 
-
-                if image_hash not in shown_images:
-                    shown_images.add(image_hash) # Add to shown images to avoid duplicates
-
-                    image_data = base64.b64decode(msg["image"]) # Decode the base64 image data
-                    image = Image.open(io.BytesIO(image_data)) 
-                    resized_image = image.resize((500, 300)) # Resize the image for better display
-                    st.image(resized_image, caption="Uploaded Image") 
-    elif isinstance(msg, AIMessage):
-        with st.chat_message("assistant"): # Display AI message
-            st.markdown(msg.content) 
+    if isinstance(msg, AIMessage):
+        st.chat_message("ai").markdown(msg.content)
+    elif isinstance(msg, HumanMessage):
+        st.chat_message("user").markdown(msg.content)
+    elif isinstance(msg, dict):
+        if msg.get("type") == "ai":
+            st.chat_message("ai").markdown(msg["content"])
+        elif msg.get("type") == "human":
+            with st.chat_message("user"):
+                st.markdown(msg["content"])
+                
+                # Display image if present
+                if msg.get("image"):
+                    try:
+                        image_data = base64.b64decode(msg["image"])
+                        image_hash = hashlib.md5(image_data).hexdigest()
+                        
+                        # Only show each unique image once
+                        if image_hash not in shown_images:
+                            shown_images.add(image_hash)
+                            image = Image.open(io.BytesIO(image_data))
+                            st.image(image, caption="Uploaded Image", use_container_width=True)
+                    except Exception as e:
+                        st.error(f"🖼️ Could not display image: {e}")
