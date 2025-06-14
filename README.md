@@ -63,7 +63,6 @@ graph TD
     %% Path 2: Document Question
     D -->|About Documents| G[📚 Search Documents]
     G --> H[📄 Find Relevant Info]
-    H --> E
     
     %% Document Processing (Background)
     J[📁 User Uploads Files] --> K[✂️ Split into Chunks]
