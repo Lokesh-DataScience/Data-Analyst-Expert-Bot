@@ -11,6 +11,15 @@ import tempfile
 import os
 from loaders.load_csv import load_csv
 from loaders.load_pdf import PyPDFLoader, ingest_pdf
+from diskcache import Cache
+import hashlib
+
+# Set up cache directory
+cache = Cache(directory="./.cache")
+
+# Util: Create stable hash key
+def hash_data(data: str) -> str:
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
 app = FastAPI()
@@ -69,29 +78,32 @@ def chat_endpoint(request: QueryRequest):
 
 @app.post("/image-upload")
 def image_upload_endpoint(request: ImageQueryRequest):
-    # Step 1: Get image description from Groq multimodal LLM
-    client = Groq()
-    model = "meta-llama/llama-4-maverick-17b-128e-instruct"
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Describe this image for data analysis:"},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{request.image_type};base64,{request.image_base64}",
+    image_key = hash_data(request.image_base64)
+    if image_key in cache:
+        image_context = cache[image_key]
+    else:
+        client = Groq()
+        model = "meta-llama/llama-4-maverick-17b-128e-instruct"
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image for data analysis:"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{request.image_type};base64,{request.image_base64}",
+                        },
                     },
-                },
-            ],
-        }
-    ]
-    chat_completion = client.chat.completions.create(
-        messages=messages,
-        model=model
-    )
-    image_context = chat_completion.choices[0].message.content
-
+                ],
+            }
+        ]
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model=model
+        )
+        image_context = chat_completion.choices[0].message.content
+        cache[image_key] = image_context
     # Step 2: Use build_contextual_chain with image context
     contextual_chain = build_contextual_chain()
 
@@ -109,18 +121,19 @@ def image_upload_endpoint(request: ImageQueryRequest):
 
 @app.post("/csv-upload")
 def csv_upload_endpoint(request: CSVQueryRequest):
-    # Decode and save the CSV file temporarily
-    csv_bytes = base64.b64decode(request.csv_base64)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
-        tmp_csv.write(csv_bytes)
-        tmp_csv_path = tmp_csv.name
+    csv_key = hash_data(request.csv_base64 + request.question)
+    if csv_key in cache:
+        csv_context = cache[csv_key]
+    else:
+        csv_bytes = base64.b64decode(request.csv_base64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
+            tmp_csv.write(csv_bytes)
+            tmp_csv_path = tmp_csv.name
+        csv_docs = load_csv(tmp_csv_path)
+        os.unlink(tmp_csv_path)
+        csv_context = "\n".join([doc.page_content for doc in csv_docs])
+        cache[csv_key] = csv_context
 
-    # Load CSV content using your loader
-    csv_docs = load_csv(tmp_csv_path)
-    os.unlink(tmp_csv_path)  # Clean up temp file
-
-    # Prepare context from CSV content
-    csv_context = "\n".join([doc.page_content for doc in csv_docs])
 
     contextual_chain = build_contextual_chain()
 
@@ -137,19 +150,20 @@ def csv_upload_endpoint(request: CSVQueryRequest):
 
 @app.post("/pdf-upload")
 def pdf_upload_endpoint(request: PdfQueryRequest):
-    # Decode and save the PDF file temporarily
-    pdf_bytes = base64.b64decode(request.pdf_base64)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-        tmp_pdf.write(pdf_bytes)
-        tmp_pdf_path = tmp_pdf.name
+    pdf_key = hash_data(request.pdf_base64 + request.question)
+    if pdf_key in cache:
+        pdf_context = cache[pdf_key]
+    else:
+        pdf_bytes = base64.b64decode(request.pdf_base64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+            tmp_pdf.write(pdf_bytes)
+            tmp_pdf_path = tmp_pdf.name
+        loader = PyPDFLoader(tmp_pdf_path)
+        pdf_docs = loader.load()
+        os.unlink(tmp_pdf_path)
+        pdf_context = "\n".join([doc.page_content for doc in pdf_docs])
+        cache[pdf_key] = pdf_context
 
-    # Load PDF content using PyPDFLoader
-    loader = PyPDFLoader(tmp_pdf_path)
-    pdf_docs = loader.load()
-    os.unlink(tmp_pdf_path)  # Clean up temp file
-
-    # Prepare context from PDF content
-    pdf_context = "\n".join([doc.page_content for doc in pdf_docs])
 
     # Prepare chat history
     memory = get_memory(request.session_id or "default")
