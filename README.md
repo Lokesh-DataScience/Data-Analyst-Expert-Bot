@@ -45,6 +45,56 @@ graph TD
     C -->|Recent Chats| K[Recent Chat Store]
     C -->|Trigger| H
 ```
+## 🤖 Output Generation
+
+```mermaid
+graph TD
+graph TD
+    %% User Journey
+    A[👤 User Types Question] --> B[💻 Web Interface]
+    B --> C[🔧 Backend Server]
+    
+    %% Two Main Paths
+    C --> D{What type of question?}
+    
+    %% Path 1: Simple Question
+    D -->|Simple Question| E[🤖 AI Assistant<br/>Groq LLM]
+    E --> F[💬 Direct Answer]
+    
+    %% Path 2: Document Question
+    D -->|About Documents| G[📚 Search Documents]
+    G --> H[📄 Find Relevant Info]
+    H --> E
+    
+    %% Document Processing (Background)
+    J[📁 User Uploads Files] --> K[✂️ Split into Chunks]
+    K --> L[🔤 Convert to Numbers]
+    L --> M[💾 Store in Database]
+    M --> G
+    
+    %% Web Scraping (Background)
+    N[🌐 Scrape Websites] --> K
+    
+    %% Final Output
+    F --> O[📱 Show Answer to User]
+    I --> O
+    
+    %% Memory
+    C <--> P[🧠 Remember Conversation]
+    
+    %% Styling for clarity
+    classDef user fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef process fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef ai fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
+    classDef storage fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef output fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    
+    class A,B,J user
+    class C,D,G,H,K,L,N process
+    class E ai
+    class M,P storage
+    class F,I,O output
+```
 
 ---
 
