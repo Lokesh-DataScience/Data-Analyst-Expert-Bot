@@ -64,11 +64,6 @@ flowchart TD
     D -->|✅ AI Response| C
     C -->|📋 Final Answer| B
     B -->|📺 Shows Result| A
-
-    %% Styling
-    classDef userStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef processStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef storageStyle fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
     
     class A,B userStyle
     class C,D,J processStyle
