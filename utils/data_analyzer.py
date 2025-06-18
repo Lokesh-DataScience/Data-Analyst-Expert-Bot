@@ -34,7 +34,7 @@ class DataAnalyzer:
             sample_values = cleaned_df[col].dropna().head(10)
             if len(sample_values) > 0:
                 try:
-                    parsed_sample = pd.to_datetime(sample_values, errors='coerce')
+                    parsed_sample = pd.to_datetime(sample_values, format='%Y-%m-%d', errors='coerce')
                     if parsed_sample.notna().sum() > len(sample_values) * 0.7:  # 70% parseable
                         potential_date_cols.append(col)
                 except:
@@ -113,17 +113,17 @@ class DataAnalyzer:
                     # Use median for numeric columns
                     median_val = cleaned_df[col].median()
                     if pd.notna(median_val):  # Only fill if median is not NaN
-                        cleaned_df[col].fillna(median_val, inplace=True)
+                        cleaned_df[col] = cleaned_df[col].fillna(median_val)  # <-- CORRECT
                 elif cleaned_df[col].dtype == 'object':
                     # Use mode for categorical columns
                     mode_values = cleaned_df[col].mode()
                     mode_val = mode_values[0] if len(mode_values) > 0 else 'unknown'
-                    cleaned_df[col].fillna(mode_val, inplace=True)
+                    cleaned_df[col] = cleaned_df[col].fillna(mode_val)
                 elif pd.api.types.is_datetime64_any_dtype(cleaned_df[col]):
                     # Use mode for datetime columns
                     mode_values = cleaned_df[col].mode()
                     if len(mode_values) > 0:
-                        cleaned_df[col].fillna(mode_values[0], inplace=True)
+                        cleaned_df[col] = cleaned_df[col].fillna(mode_val)
             cleaning_log.append(f"Handled {missing_before} missing values")
 
         # 7. Advanced outlier handling (IQR)
