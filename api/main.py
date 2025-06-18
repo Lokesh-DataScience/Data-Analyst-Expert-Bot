@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from chains.rag_chain import build_chain, build_contextual_chain
 from typing import List, Dict, Optional
@@ -13,6 +14,8 @@ from loaders.load_csv import load_csv
 from loaders.load_pdf import PyPDFLoader, ingest_pdf
 from diskcache import Cache
 import hashlib
+import pandas as pd
+from utils.data_analyzer import DataAnalyzer
 
 # Set up cache directory
 cache = Cache(directory="./.cache")
@@ -29,7 +32,7 @@ app = FastAPI()
 # CORS for Streamlit
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ["http://localhost:8501"]
+    allow_origins=["http://localhost:8501"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,16 +97,13 @@ def chat_endpoint(request: QueryRequest):
     memory = get_memory(request.session_id or "default")
     # Pass memory to the chain
     session_key = request.session_id or "default"
-
     # Update memory + store human message
     chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
-
     # Invoke model
     response = rag_chain.invoke({
         "input": request.question,
         "chat_history": chat_history_str
     })
-
     # Append AI response to history
     chat_store.setdefault(session_key, [])
     chat_store[session_key].append({
@@ -111,8 +111,6 @@ def chat_endpoint(request: QueryRequest):
         "content": response.get("answer", "No response")
     })
     cache["chat_store"] = chat_store
-
-
     return {"response": response.get("answer", "No response")}
 
 @app.post("/image-upload")
