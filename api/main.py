@@ -1,3 +1,5 @@
+import json
+import numpy as np
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,7 +13,7 @@ import base64
 import tempfile
 import os
 from loaders.load_csv import load_csv
-from loaders.load_pdf import PyPDFLoader, ingest_pdf
+from loaders.load_pdf import PyPDFLoader
 from diskcache import Cache
 import hashlib
 import pandas as pd
@@ -20,12 +22,11 @@ from utils.data_analyzer import DataAnalyzer
 # Set up cache directory
 cache = Cache(directory="./.cache")
 # Store chat histories per session
-chat_store = cache.get("chat_store", {})  # recover from cache if available
+chat_store = cache.get("chat_store", {})
 
 # Util: Create stable hash key
 def hash_data(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
-
 
 app = FastAPI()
 
@@ -38,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Input schema
+# Input schemas
 class QueryRequest(BaseModel):
     question: str
     chat_history: Optional[List[Dict]] = None
@@ -56,13 +57,28 @@ class PdfQueryRequest(QueryRequest):
     pdf_base64: str
     pdf_filename: str
 
+class DataAnalysisRequest(BaseModel):
+    csv_base64: str
+    csv_filename: str
+    session_id: Optional[str] = None
+
+class MultiUploadQueryRequest(BaseModel):
+    question: str
+    session_id: Optional[str] = None
+    chat_history: Optional[List[Dict]] = None
+    image_base64: Optional[str] = None
+    image_type: Optional[str] = None
+    csv_base64: Optional[str] = None
+    csv_filename: Optional[str] = None
+    pdf_base64: Optional[str] = None
+    pdf_filename: Optional[str] = None
+
 def update_memory_and_history(memory, chat_history, session_id: str):
     session_key = session_id or "default"
     memory.messages.clear()
 
     # Initialize or fetch session history
     existing_history = chat_store.get(session_key, [])
-
     updated_history = []
 
     for msg in chat_history or []:
@@ -78,7 +94,7 @@ def update_memory_and_history(memory, chat_history, session_id: str):
             "content": msg["content"],
         }
         if "file" in msg:
-            entry["file"] = msg["file"]  # Include file metadata
+            entry["file"] = msg["file"]
         updated_history.append(entry)
 
     # Persist updated chat history
@@ -95,15 +111,17 @@ rag_chain = build_chain()
 @app.post("/chat")
 def chat_endpoint(request: QueryRequest):
     memory = get_memory(request.session_id or "default")
-    # Pass memory to the chain
     session_key = request.session_id or "default"
+    
     # Update memory + store human message
     chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
+    
     # Invoke model
     response = rag_chain.invoke({
         "input": request.question,
         "chat_history": chat_history_str
     })
+    
     # Append AI response to history
     chat_store.setdefault(session_key, [])
     chat_store[session_key].append({
@@ -113,8 +131,105 @@ def chat_endpoint(request: QueryRequest):
     cache["chat_store"] = chat_store
     return {"response": response.get("answer", "No response")}
 
+def get_image_context(image_base64: str, image_type: str) -> str:
+    """Get image context with caching"""
+    image_key = hash_data(image_base64)
+    if image_key in cache:
+        return cache[image_key]
+    
+    client = Groq()
+    model = "meta-llama/llama-4-maverick-17b-128e-instruct"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image for data analysis:"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image_type};base64,{image_base64}",
+                    },
+                },
+            ],
+        }
+    ]
+    chat_completion = client.chat.completions.create(
+        messages=messages,
+        model=model
+    )
+    image_context = chat_completion.choices[0].message.content
+    cache[image_key] = image_context
+    return image_context
+
+def get_csv_context(csv_base64: str, question: str = "") -> str:
+    """Get CSV context with caching"""
+    csv_key = hash_data(csv_base64 + question)
+    if csv_key in cache:
+        return cache[csv_key]
+    
+    csv_bytes = base64.b64decode(csv_base64)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
+        tmp_csv.write(csv_bytes)
+        tmp_csv_path = tmp_csv.name
+    
+    try:
+        csv_docs = load_csv(tmp_csv_path)
+        csv_context = "\n".join([doc.page_content for doc in csv_docs])
+        cache[csv_key] = csv_context
+        return csv_context
+    finally:
+        os.unlink(tmp_csv_path)
+
+def get_pdf_context(pdf_base64: str, question: str = "") -> str:
+    """Get PDF context with caching"""
+    pdf_key = hash_data(pdf_base64 + question)
+    if pdf_key in cache:
+        return cache[pdf_key]
+    
+    pdf_bytes = base64.b64decode(pdf_base64)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+        tmp_pdf.write(pdf_bytes)
+        tmp_pdf_path = tmp_pdf.name
+    
+    try:
+        loader = PyPDFLoader(tmp_pdf_path)
+        pdf_docs = loader.load()
+        pdf_context = "\n".join([doc.page_content for doc in pdf_docs])
+        cache[pdf_key] = pdf_context
+        return pdf_context
+    finally:
+        os.unlink(tmp_pdf_path)
+
+def process_contextual_request(question: str, context: str, chat_history: Optional[List[Dict]], session_id: str) -> str:
+    """Process request with context and return response"""
+    contextual_chain = build_contextual_chain()
+    memory = get_memory(session_id or "default")
+    session_key = session_id or "default"
+
+    # Update memory + store human message
+    chat_history_str = update_memory_and_history(memory, chat_history, session_key)
+
+    # Invoke model
+    response = contextual_chain.invoke({
+        "input": question,
+        "chat_history": chat_history_str,
+        "context": context
+    })
+
+    # Append AI response to history
+    answer = response.content if hasattr(response, "content") else str(response)
+    chat_store.setdefault(session_key, [])
+    chat_store[session_key].append({
+        "type": "ai",
+        "content": answer
+    })
+    cache["chat_store"] = chat_store
+
+    return answer
+
 @app.post("/image-upload")
 def image_upload_endpoint(request: ImageQueryRequest):
+    # Add file metadata to chat history
     if request.chat_history:
         for msg in request.chat_history:
             if msg["type"] == "human":
@@ -124,63 +239,13 @@ def image_upload_endpoint(request: ImageQueryRequest):
                     "base64": request.image_base64
                 }
 
-    image_key = hash_data(request.image_base64)
-    if image_key in cache:
-        image_context = cache[image_key]
-    else:
-        client = Groq()
-        model = "meta-llama/llama-4-maverick-17b-128e-instruct"
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Describe this image for data analysis:"},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{request.image_type};base64,{request.image_base64}",
-                        },
-                    },
-                ],
-            }
-        ]
-        chat_completion = client.chat.completions.create(
-            messages=messages,
-            model=model
-        )
-        image_context = chat_completion.choices[0].message.content
-        cache[image_key] = image_context
-    # Step 2: Use build_contextual_chain with image context
-    contextual_chain = build_contextual_chain()
-
-    memory = get_memory(request.session_id or "default")
-
-    session_key = request.session_id or "default"
-
-    # Update memory + store human message
-    chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
-
-    # Invoke model
-    response = contextual_chain.invoke({
-        "input": request.question,
-        "chat_history": chat_history_str,
-        "context": image_context
-    })
-
-    # Append AI response to history
-    chat_store.setdefault(session_key, [])
-    chat_store[session_key].append({
-        "type": "ai",
-        "content": response.content if hasattr(response, "content") else str(response)
-    })
-    cache["chat_store"] = chat_store  # persist
-
-    # After getting image_context (for image-upload)
-    return {"response": response.content if hasattr(response, "content") else str(response)}
+    image_context = get_image_context(request.image_base64, request.image_type)
+    answer = process_contextual_request(request.question, image_context, request.chat_history, request.session_id)
+    return {"response": answer}
 
 @app.post("/csv-upload")
 def csv_upload_endpoint(request: CSVQueryRequest):
-    
+    # Add file metadata to chat history
     if request.chat_history:
         for msg in request.chat_history:
             if msg["type"] == "human":
@@ -190,97 +255,84 @@ def csv_upload_endpoint(request: CSVQueryRequest):
                     "base64": request.csv_base64
                 }
 
-    csv_key = hash_data(request.csv_base64 + request.question)
-    if csv_key in cache:
-        csv_context = cache[csv_key]
-    else:
-        csv_bytes = base64.b64decode(request.csv_base64)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
-            tmp_csv.write(csv_bytes)
-            tmp_csv_path = tmp_csv.name
-        csv_docs = load_csv(tmp_csv_path)
-        os.unlink(tmp_csv_path)
-        csv_context = "\n".join([doc.page_content for doc in csv_docs])
-        cache[csv_key] = csv_context
-
-    contextual_chain = build_contextual_chain()
-    memory = get_memory(request.session_id or "default")
-    session_key = request.session_id or "default"
-
-    # Update memory + store human message
-    chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
-
-    # Invoke model
-    response = contextual_chain.invoke({
-        "input": request.question,
-        "chat_history": chat_history_str,
-        "context": csv_context
-    })
-
-    # Append AI response to history
-    chat_store.setdefault(session_key, [])
-    chat_store[session_key].append({
-        "type": "ai",
-        "content": response.content if hasattr(response, "content") else str(response)
-    })
-    cache["chat_store"] = chat_store  # persist
-
-    return {"response": response.content if hasattr(response, "content") else str(response)}
+    csv_context = get_csv_context(request.csv_base64, request.question)
+    answer = process_contextual_request(request.question, csv_context, request.chat_history, request.session_id)
+    return {"response": answer}
 
 @app.post("/pdf-upload")
 def pdf_upload_endpoint(request: PdfQueryRequest):
+    # Add file metadata to chat history
     if request.chat_history:
         for msg in request.chat_history:
             if msg["type"] == "human":
                 msg["file"] = {
                     "type": "pdf",
-                    "name": request.pdf_filename,
+                    "name": request.pdf_filename,  
                     "base64": request.pdf_base64
                 }
 
-    pdf_key = hash_data(request.pdf_base64 + request.question)
-    if pdf_key in cache:
-        pdf_context = cache[pdf_key]
-    else:
-        pdf_bytes = base64.b64decode(request.pdf_base64)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-            tmp_pdf.write(pdf_bytes)
-            tmp_pdf_path = tmp_pdf.name
-        loader = PyPDFLoader(tmp_pdf_path)
-        pdf_docs = loader.load()
-        os.unlink(tmp_pdf_path)
-        pdf_context = "\n".join([doc.page_content for doc in pdf_docs])
-        cache[pdf_key] = pdf_context
+    pdf_context = get_pdf_context(request.pdf_base64, request.question)
+    answer = process_contextual_request(request.question, pdf_context, request.chat_history, request.session_id)
+    return {"response": answer}
 
-
-    # Prepare chat history
-    memory = get_memory(request.session_id or "default")
+@app.post("/multi-upload")
+def multi_upload_endpoint(request: MultiUploadQueryRequest):
+    """
+    Accepts any combination of image, CSV, and PDF, and provides a context-aware answer.
+    """
     session_key = request.session_id or "default"
-
-    # Update memory + store human message
+    memory = get_memory(session_key)
     chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
 
-    # Invoke model
-    contextual_chain = build_contextual_chain()
-    response = contextual_chain.invoke({
-        "input": request.question,
-        "chat_history": chat_history_str,
-        "context": pdf_context
-    })
+    # Gather contexts
+    contexts = []
+
+    # Image context
+    if request.image_base64 and request.image_type:
+        image_context = get_image_context(request.image_base64, request.image_type)
+        contexts.append(f"Image context: {image_context}")
+
+    # CSV context
+    if request.csv_base64 and request.csv_filename:
+        csv_context = get_csv_context(request.csv_base64, request.question or "")
+        contexts.append(f"CSV context: {csv_context}")
+
+    # PDF context
+    if request.pdf_base64 and request.pdf_filename:
+        pdf_context = get_pdf_context(request.pdf_base64, request.question or "")
+        contexts.append(f"PDF context: {pdf_context}")
+
+    # Combine all contexts
+    combined_context = "\n\n".join(contexts) if contexts else None
+
+    # Use the contextual chain if any context is present, else fallback to rag_chain
+    if combined_context:
+        contextual_chain = build_contextual_chain()
+        response = contextual_chain.invoke({
+            "input": request.question,
+            "chat_history": chat_history_str,
+            "context": combined_context
+        })
+        answer = response.content if hasattr(response, "content") else str(response)
+    else:
+        response = rag_chain.invoke({
+            "input": request.question,
+            "chat_history": chat_history_str
+        })
+        answer = response.get("answer", "No response")
 
     # Append AI response to history
     chat_store.setdefault(session_key, [])
     chat_store[session_key].append({
         "type": "ai",
-        "content": response.content if hasattr(response, "content") else str(response)
+        "content": answer
     })
-    cache["chat_store"] = chat_store  # persist
+    cache["chat_store"] = chat_store
 
-    return {"response": response.content if hasattr(response, "content") else str(response)}
+    return {"response": answer}
 
 @app.get("/recent-chats/{session_id}")
 def get_recent_chats(session_id: str):
-    history = chat_store.get(session_id, [])
     return {"chat_history": chat_store.get(session_id, [])}
 
 @app.get("/recent-chat-titles")
@@ -295,3 +347,304 @@ def get_recent_chat_titles():
                 })
                 break  # Only take the first human message
     return {"sessions": titles}
+
+@app.post("/save-chat")
+def save_chat_endpoint(data: dict):
+    session_id = data.get("session_id")
+    chat_history = data.get("chat_history", [])
+    if session_id and chat_history:
+        chat_store[session_id] = chat_history
+        cache["chat_store"] = chat_store
+        return {"success": True}
+    return {"success": False, "error": "Missing session_id or chat_history"}
+
+# Plotly boolean properties for fixing serialization issues
+PLOTLY_BOOL_PROPS = {
+    "showarrow", "automargin", "showlegend", "matches", "visible", "autosize",
+    "showticklabels", "showgrid", "zeroline", "showline", "mirror", "ticks",
+    "showspikes", "showaxeslabels", "fixedrange", "constraintoward",
+    "connectgaps", "fill", "showscale", "reversescale", "autocolorscale",
+    "showcolorbar", "transpose", "zauto", "ncontours", "autocontour",
+    "autobinx", "autobiny", "standoff", "clicktoshow", "captureevents",
+    "autorange", "outlinewidth", "borderwidth", "thickness", "len",
+    "fillcolor", "opacity"
+}
+
+def fix_plotly_bools(obj, parent_key=None):
+    """Recursively fix boolean properties in Plotly figure dictionaries"""
+    if isinstance(obj, dict):
+        fixed_dict = {}
+        for key, value in obj.items():
+            if key in PLOTLY_BOOL_PROPS:
+                if isinstance(value, int):
+                    fixed_dict[key] = bool(value)
+                elif isinstance(value, str):
+                    if value.lower() in ['true', '1']:
+                        fixed_dict[key] = True
+                    elif value.lower() in ['false', '0']:
+                        fixed_dict[key] = False
+                    else:
+                        fixed_dict[key] = value
+                else:
+                    fixed_dict[key] = value
+            else:
+                fixed_dict[key] = fix_plotly_bools(value, key)
+        return fixed_dict
+    elif isinstance(obj, list):
+        return [fix_plotly_bools(item, parent_key) for item in obj]
+    else:
+        if parent_key in PLOTLY_BOOL_PROPS and isinstance(obj, int):
+            return bool(obj)
+        return obj
+
+def clean_dict_for_json(obj):
+    """Clean dictionary for JSON serialization with enhanced boolean handling"""
+    if isinstance(obj, dict):
+        cleaned = {}
+        for k, v in obj.items():
+            cleaned_v = clean_dict_for_json(v)
+            if k in PLOTLY_BOOL_PROPS and isinstance(cleaned_v, int):
+                cleaned[k] = bool(cleaned_v)
+            else:
+                cleaned[k] = cleaned_v
+        return cleaned
+    elif isinstance(obj, list):
+        return [clean_dict_for_json(item) for item in obj]
+    elif isinstance(obj, np.ndarray):
+        return clean_dict_for_json(obj.tolist())
+    elif isinstance(obj, (int, float)):
+        if pd.isna(obj) or not np.isfinite(obj):
+            return None
+        return obj
+    else:
+        return obj
+
+def convert_to_serializable(obj):
+    """Recursively convert object to JSON-serializable types"""
+    if isinstance(obj, dict):
+        return {str(k): convert_to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_serializable(v) for v in obj]
+    elif isinstance(obj, (np.integer, int)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, float)):
+        if pd.isna(obj) or not np.isfinite(obj):
+            return None
+        return float(obj)
+    elif isinstance(obj, (np.ndarray, pd.Series)):
+        return convert_to_serializable(obj.tolist())
+    elif isinstance(obj, pd.DataFrame):
+        return convert_to_serializable(obj.to_dict('records'))
+    elif isinstance(obj, (pd.Timestamp, pd.Timedelta)):
+        return str(obj)
+    else:
+        return obj
+
+def clean_for_json(dataframe):
+    """Clean DataFrame to ensure JSON serialization compatibility"""
+    dataframe = dataframe.replace([np.inf, -np.inf], np.nan)
+    numeric_columns = dataframe.select_dtypes(include=[np.number]).columns
+    dataframe[numeric_columns] = dataframe[numeric_columns].apply(
+        lambda col: col.fillna(col.median()) if col.dtype in [np.float64, np.int64] else col
+    )
+    return dataframe
+
+@app.post("/analyze-data")
+def analyze_data_endpoint(request: DataAnalysisRequest):
+    """
+    Comprehensive data analysis endpoint that performs:
+    - Data cleaning and preprocessing
+    - Statistical analysis
+    - AI-powered insights generation
+    - Interactive visualizations
+    """
+    try:
+        # Decode the CSV data
+        csv_bytes = base64.b64decode(request.csv_base64)
+        
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
+            tmp_csv.write(csv_bytes)
+            tmp_csv_path = tmp_csv.name
+        
+        try:
+            # Load the CSV into a pandas DataFrame
+            df = pd.read_csv(tmp_csv_path)
+            
+            # Initialize the DataAnalyzer
+            analyzer = DataAnalyzer()
+            
+            # Perform deep data cleaning
+            cleaned_df, cleaning_log = analyzer.deep_clean_data(df)
+            cleaned_df = clean_for_json(cleaned_df)
+            
+            # Generate AI-powered insights
+            insights = analyzer.generate_insights(cleaned_df, cleaning_log)
+            
+            # Perform statistical analysis
+            statistical_summary = analyzer.statistical_analysis(cleaned_df)
+            
+            # Clean statistical summary
+            if isinstance(statistical_summary, dict):
+                statistical_summary = {
+                    k: (v if isinstance(v, (int, float)) and pd.notna(v) and np.isfinite(v) else None) 
+                    for k, v in statistical_summary.items()
+                }
+            
+            # Create visualizations
+            plots = analyzer.create_visualizations(cleaned_df)
+            
+            # Convert plots to JSON for frontend
+            plots_json = {}
+            for plot_name, fig in plots.items():
+                try:
+                    fig_dict = fig.to_dict()
+                    cleaned_fig_dict = clean_dict_for_json(fig_dict)
+                    fixed_fig_dict = fix_plotly_bools(cleaned_fig_dict)
+                    plots_json[plot_name] = fixed_fig_dict
+                except Exception as plot_error:
+                    plots_json[plot_name] = {"error": f"Could not generate plot: {str(plot_error)}"}
+
+            # Prepare response data
+            response_data = {
+                "success": True,
+                "original_shape": df.shape,
+                "cleaned_shape": cleaned_df.shape,
+                "cleaning_log": convert_to_serializable(cleaning_log),
+                "insights": convert_to_serializable(insights),
+                "statistical_summary": convert_to_serializable(statistical_summary),
+                "visualizations": plots_json,
+                "column_info": convert_to_serializable({
+                    "original_columns": list(df.columns),
+                    "cleaned_columns": list(cleaned_df.columns),
+                    "data_types": cleaned_df.dtypes.astype(str).to_dict(),
+                    "missing_values": cleaned_df.isnull().sum().to_dict(),
+                    "unique_counts": cleaned_df.nunique().to_dict()
+                }),
+                "sample_data": {
+                    "original": convert_to_serializable(df.head()),
+                    "cleaned": convert_to_serializable(cleaned_df.head())
+                }
+            }
+            
+            return JSONResponse(content=response_data)
+            
+        finally:
+            os.unlink(tmp_csv_path)
+            
+    except Exception as e:
+        error_message = str(e)
+        
+        # Handle specific error types
+        if "API quota" in error_message or "429" in error_message:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "success": False,
+                    "error": "API quota exceeded",
+                    "message": "The AI insights feature has reached its usage limit. Please try again later or check your API quota.",
+                    "error_type": "quota_exceeded"
+                }
+            )
+        elif "pandas" in error_message.lower() or "csv" in error_message.lower():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "Invalid CSV file",
+                    "message": "The uploaded file could not be processed as a valid CSV. Please check the file format.",
+                    "error_type": "invalid_csv"
+                }
+            )
+        elif "JSON compliant" in error_message or "out of range" in error_message.lower():
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": "Data serialization error",
+                    "message": "The data contains values that cannot be converted to JSON. This usually indicates infinite or extremely large numbers in your dataset.",
+                    "error_type": "serialization_error"
+                }
+            )
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": "Analysis failed",
+                    "message": f"An error occurred during data analysis: {error_message}",
+                    "error_type": "analysis_error"
+                }
+            )
+
+@app.post("/clean-data")
+def clean_data_endpoint(request: DataAnalysisRequest):
+    """
+    Simplified data cleaning endpoint that only performs data preprocessing
+    without AI insights (useful when API quota is exceeded)
+    """
+    try:
+        csv_bytes = base64.b64decode(request.csv_base64)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
+            tmp_csv.write(csv_bytes)
+            tmp_csv_path = tmp_csv.name
+        
+        try:
+            df = pd.read_csv(tmp_csv_path)
+            analyzer = DataAnalyzer()
+            
+            # Perform deep data cleaning
+            cleaned_df, cleaning_log = analyzer.deep_clean_data(df)
+            
+            # Perform statistical analysis
+            statistical_summary = analyzer.statistical_analysis(cleaned_df)
+            
+            # Create basic visualizations
+            plots = analyzer.create_visualizations(cleaned_df)
+            
+            # Convert plots to JSON for frontend
+            plots_json = {}
+            for plot_name, fig in plots.items():
+                try:
+                    fig_dict = fig.to_dict()
+                    cleaned_fig_dict = fix_plotly_bools(fig_dict)
+                    plots_json[plot_name] = cleaned_fig_dict
+                except Exception as plot_error:
+                    plots_json[plot_name] = {"error": f"Could not generate plot: {str(plot_error)}"}            
+            
+            response_data = {
+                "success": True,
+                "original_shape": df.shape,
+                "cleaned_shape": cleaned_df.shape,
+                "cleaning_log": cleaning_log,
+                "statistical_summary": statistical_summary,
+                "visualizations": plots_json,
+                "column_info": {
+                    "original_columns": list(df.columns),
+                    "cleaned_columns": list(cleaned_df.columns),
+                    "data_types": cleaned_df.dtypes.astype(str).to_dict(),
+                    "missing_values": cleaned_df.isnull().sum().to_dict(),
+                    "unique_counts": cleaned_df.nunique().to_dict()
+                },
+                "sample_data": {
+                    "original": df.head().to_dict('records'),
+                    "cleaned": cleaned_df.head().to_dict('records')
+                }
+            }
+            
+            return JSONResponse(content=response_data)
+            
+        finally:
+            os.unlink(tmp_csv_path)
+            
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": "Data cleaning failed",
+                "message": f"An error occurred during data cleaning: {str(e)}",
+                "error_type": "cleaning_error"
+            }
+        )

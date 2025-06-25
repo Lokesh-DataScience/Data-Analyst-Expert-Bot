@@ -7,7 +7,10 @@
 ## 🚀 Features
 
 - **Conversational AI**: Chat with an LLM (Llama 3/4 via Groq) about any data analysis topic.
-- **Image Understanding**: Upload images (e.g., charts, screenshots, or photos) and ask questions about them. The bot uses a multimodal LLM to analyze and respond, then grounds the answer using your chat history and knowledge base.
+- **Multi-File Upload & Analysis**: Upload and analyze images (charts, screenshots), CSV/Excel files, and PDFs **simultaneously**. The bot uses all provided files as context for your question via the `/multi-upload` endpoint.
+- **Data Cleaning & Analysis Endpoints**: Use `/analyze-data` for full AI-powered analysis (cleaning, stats, insights, visualizations) and `/clean-data` for fast, quota-free cleaning and summary.
+- **Modern GUI**: Redesigned Streamlit interface with tabs for chat and data upload, sidebar controls, recent chat management, and raw data preview.
+- **Image Understanding**: Upload images and ask questions about them. The bot uses a multimodal LLM to analyze and respond, then grounds the answer using your chat history and knowledge base.
 - **CSV Data Analysis**: Upload a CSV file and ask questions about its content. The bot uses the CSV content as context for the LLM, providing data-aware answers.
 - **PDF Data Analysis**: Upload a PDF file and ask questions about its content. The bot extracts text from the PDF and uses it as context for the LLM, enabling document-aware responses.
 - **File Caching**: Uploaded CSV, image, and PDF data are cached for each session, enabling fast, context-aware follow-up questions without re-uploading or re-processing files.
@@ -185,7 +188,11 @@ DataAnalystBot/
 │   ├── pointtech_scraper.py
 │   └── towardsdatascience_scrapper.py
 ├── streamlit_app/        # Streamlit UI
-│   └── app.py
+│   ├── components/
+│   ├── config/
+│   ├── styles/
+|   ├── utils/
+|   └── app.py
 ├── vector_db/            # Vector DB creation/loading
 │   └── faiss_db.py
 ├── requirements.txt
@@ -199,6 +206,7 @@ DataAnalystBot/
 - **Add new sources**: Write a new scraper in `scrapers/`, chunk the content, and append to `data/data.jsonl`.
 - **Change chunk size**: Adjust the `textwrap.wrap(..., width=500)` in scrapers.
 - **Swap LLM or embeddings**: Update model names in `chains/rag_chain.py` or `vector_db/faiss_db.py`.
+- **Switch between full analysis and fast cleaning**: Use `/analyze-data` for AI-powered insights, or `/clean-data` for quick cleaning and stats.
 
 ---
 
