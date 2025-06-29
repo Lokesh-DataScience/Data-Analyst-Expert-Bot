@@ -162,7 +162,7 @@ def save_chunked(results, out_path):
             f.write("\n")
 
 # Run
-query = "powerbi" #data analyst, SQL
+query = "machine learning interview" #data analyst, SQL
 scraped_results = scrape_details(query)
 save_chunked(scraped_results, "data/data.jsonl")
 

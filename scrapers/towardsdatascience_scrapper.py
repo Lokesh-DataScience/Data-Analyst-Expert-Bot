@@ -99,7 +99,7 @@ def scrape_details(context: str):
     return results
 
 if __name__ == "__main__":
-    context = "data analyst"
+    context = "machine learning interview"
     results = scrape_details(context)
     chunked_data = []
     for article in results:

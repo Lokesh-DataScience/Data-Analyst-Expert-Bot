@@ -90,7 +90,7 @@ def scrape_details(context: str):
 
     return results
 
-title = "data handling" #data analysis, data analysis tutorials, powerbi, sql, ms excel, tableau, data cleaning, data analysis using python, Data Visualization
+title = "machine learning interview" #data analysis, data analysis tutorials, powerbi, sql, ms excel, tableau, data cleaning, data analysis using python, Data Visualization
 results = scrape_details(title)
 
 chunked_data = []
