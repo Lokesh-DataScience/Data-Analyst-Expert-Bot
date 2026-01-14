@@ -88,6 +88,15 @@ def main():
                     
                 except Exception as e:
                     st.error(f"❌ An error occurred during analysis: {e}")
+    st.markdown(
+        """
+        <hr style="margin-top:2em;margin-bottom:0.5em;">
+        <div style="text-align:center; color: #888; font-size: 0.95em;">
+            &copy; 2025 <a href="https://lokesh-datascience.github.io/portfolio/" target="_blank" style="color:#888;text-decoration:underline;">Developed By Lokesh Kumar</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 if __name__ == "__main__":
     main()
