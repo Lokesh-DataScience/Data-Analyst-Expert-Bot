@@ -9,6 +9,7 @@
 - **Conversational AI**: Chat with an LLM (Llama 3/4 via Groq) about any data analysis topic.
 - **Multi-File Upload & Analysis**: Upload and analyze images (charts, screenshots), CSV/Excel files, and PDFs **simultaneously**. The bot uses all provided files as context for your question via the `/multi-upload` endpoint.
 - **Data Cleaning & Analysis Endpoints**: Use `/analyze-data` for full AI-powered analysis (cleaning, stats, insights, visualizations) and `/clean-data` for fast, quota-free cleaning and summary.
+- **SQL Query Generator**: Describe what you want in plain English, provide an optional schema or upload a CSV to auto-detect columns, and get a ready-to-run SQL query with a full explanation and optimization suggestions. Supports PostgreSQL, MySQL, SQLite, SQL Server, Oracle, BigQuery, and Snowflake.
 - **Modern GUI**: Redesigned Streamlit interface with tabs for chat and data upload, sidebar controls, recent chat management, and raw data preview.
 - **Image Understanding**: Upload images and ask questions about them. The bot uses a multimodal LLM to analyze and respond, then grounds the answer using your chat history and knowledge base.
 - **CSV Data Analysis**: Upload a CSV file and ask questions about its content. The bot uses the CSV content as context for the LLM, providing data-aware answers.
@@ -45,6 +46,7 @@ flowchart TD
         C -->|💾 Stores Uploads| J[📁 File Storage]
         C -->|🔍 Retrieves Context| E[🗄️ Vector Database]
         C -->|🧠 Generates Answer| D[🤖 AI Model - Groq]
+        C -->|🛠️ Generates SQL| L[📝 SQL Generator]
     end
 
     subgraph "💾 Data Storage"
@@ -62,6 +64,7 @@ flowchart TD
     C -->|💾 Saves Session| G
     C -->|⚡ Caches Results| I
     C -->|💬 Stores Chats| K
+    L -->|✅ SQL + Explanation| C
     
     %% Response Flow
     D -->|✅ AI Response| C
@@ -69,7 +72,7 @@ flowchart TD
     B -->|📺 Shows Result| A
     
     class A,B userStyle
-    class C,D,J processStyle
+    class C,D,J,L processStyle
     class E,F,G,H,I,K storageStyle
 ```
 
@@ -161,6 +164,7 @@ streamlit run streamlit_app/app.py
 - **To analyze an image:** Upload a jpg, jpeg, or png file and enter your question. The bot will analyze the image and respond.
 - **To analyze a CSV:** Upload a CSV file and ask a question about its content. The bot will use the CSV data as context for its answer.
 - **To analyze a PDF:** Upload a PDF file and ask a question about its content. The bot will use the PDF text as context for its answer.
+- **To generate a SQL query:** Go to the **🛠️ SQL Query Generator** tab. Paste your schema (or upload a CSV to auto-detect columns), select your database type and query type, describe what you want in plain English, and click **⚡ Generate SQL Query**. The bot returns a ready-to-run query, a plain English explanation, and optimization suggestions you can download as a `.sql` file.
 - **Note:** You can upload up to 3 images every 6 hours. If you reach the limit, you can still ask text questions.
 - **Resume conversations:** Select any recent chat from the sidebar to continue where you left off.
 
@@ -207,6 +211,7 @@ DataAnalystBot/
 - **Change chunk size**: Adjust the `textwrap.wrap(..., width=500)` in scrapers.
 - **Swap LLM or embeddings**: Update model names in `chains/rag_chain.py` or `vector_db/faiss_db.py`.
 - **Switch between full analysis and fast cleaning**: Use `/analyze-data` for AI-powered insights, or `/clean-data` for quick cleaning and stats.
+- **Extend SQL generation**: The `/generate-sql` endpoint accepts any schema DDL and supports all major SQL dialects. Add dialect-specific prompt templates in `api/main.py` to further tailor output.
 
 ---
 
@@ -214,6 +219,7 @@ DataAnalystBot/
 
 - All chat history is stored in memory per session and is not persisted.
 - API keys are loaded from `.env` and never exposed to the frontend.
+- Generated SQL queries are not executed server-side — the bot only returns query text, keeping your database safe.
 
 ---
 
