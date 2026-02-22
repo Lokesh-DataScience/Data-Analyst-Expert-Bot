@@ -75,6 +75,13 @@ class MultiUploadQueryRequest(BaseModel):
     pdf_base64: Optional[str] = None
     pdf_filename: Optional[str] = None
 
+class SQLGenerationRequest(BaseModel):
+    description: str
+    schema: Optional[str] = None
+    db_type: Optional[str] = "PostgreSQL"
+    query_type: Optional[str] = None
+    session_id: Optional[str] = None
+
 def update_memory_and_history(memory, chat_history, session_id: str):
     session_key = session_id or "default"
     memory.messages.clear()
@@ -650,3 +657,122 @@ def clean_data_endpoint(request: DataAnalysisRequest):
                 "error_type": "cleaning_error"
             }
         )
+
+@app.post("/generate-sql")
+def generate_sql_endpoint(request: SQLGenerationRequest):
+    """
+    SQL query generation endpoint that:
+    - Accepts a natural language description
+    - Optionally uses provided schema or auto-detects from context
+    - Returns a generated SQL query, explanation, and optimization suggestions
+    """
+    try:
+        # Build a structured prompt for the SQL generation
+        schema_section = f"\n\nDatabase Schema:\n{request.schema}" if request.schema else ""
+        query_type_section = f"\nQuery Type: {request.query_type}" if request.query_type else ""
+
+        prompt = f"""You are an expert SQL developer. Generate a SQL query based on the following:
+
+Database Type: {request.db_type}{query_type_section}{schema_section}
+
+User Request: {request.description}
+
+Respond ONLY in the following JSON format (no markdown, no extra text):
+{{
+  "sql_query": "<the SQL query>",
+  "explanation": "<plain English explanation of what the query does and why>",
+  "suggestions": "<performance tips, index recommendations, or alternative approaches>"
+}}"""
+
+        client = Groq()
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert SQL developer. Always respond with valid JSON only."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            model="meta-llama/llama-4-maverick-17b-128e-instruct",
+            temperature=0.1  # Low temperature for deterministic SQL output
+        )
+
+        raw_response = chat_completion.choices[0].message.content.strip()
+
+        # Strip markdown code fences if present
+        if raw_response.startswith("```"):
+            raw_response = raw_response.split("```")[1]
+            if raw_response.startswith("json"):
+                raw_response = raw_response[4:]
+            raw_response = raw_response.strip()
+
+        # Parse the JSON response
+        try:
+            result = json.loads(raw_response)
+        except json.JSONDecodeError:
+            # Fallback: return raw output as the query if JSON parsing fails
+            result = {
+                "sql_query": raw_response,
+                "explanation": "Could not parse structured response. Raw output returned.",
+                "suggestions": ""
+            }
+
+        # Optionally store in session history
+        if request.session_id:
+            session_key = request.session_id
+            chat_store.setdefault(session_key, [])
+            chat_store[session_key].append({
+                "type": "human",
+                "content": f"[SQL Generator] {request.description}"
+            })
+            chat_store[session_key].append({
+                "type": "ai",
+                "content": result.get("sql_query", "")
+            })
+            cache["chat_store"] = chat_store
+
+        return JSONResponse(content={
+            "success": True,
+            "sql_query": result.get("sql_query", ""),
+            "explanation": result.get("explanation", ""),
+            "suggestions": result.get("suggestions", ""),
+            "db_type": request.db_type,
+            "query_type": request.query_type
+        })
+
+    except Exception as e:
+        error_message = str(e)
+
+        if "API quota" in error_message or "429" in error_message:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "success": False,
+                    "error": "API quota exceeded",
+                    "message": "The SQL generation feature has reached its usage limit. Please try again later.",
+                    "error_type": "quota_exceeded"
+                }
+            )
+        elif "json" in error_message.lower():
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": "Response parsing error",
+                    "message": "The AI returned an unexpected format. Please try rephrasing your request.",
+                    "error_type": "parse_error"
+                }
+            )
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": "SQL generation failed",
+                    "message": f"An error occurred during SQL generation: {error_message}",
+                    "error_type": "generation_error"
+                }
+            )

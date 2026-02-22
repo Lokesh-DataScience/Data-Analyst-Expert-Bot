@@ -100,27 +100,6 @@ def display_analysis_results(response):
     else:
         st.info("No visualizations available")
 
-    # insights = response.get("insights")
-    # if insights:
-    #     st.subheader("🤖 AI-Generated Insights")
-    #     if isinstance(insights, str):
-    #         insight_parts = insights.split('\n')
-    #         formatted_insights = []
-    #         for part in insight_parts:
-    #             part = part.strip()
-    #             if part:
-    #                 if part.startswith('•') or part.startswith('-') or part.startswith('*'):
-    #                     formatted_insights.append(f"• {part[1:].strip()}")
-    #                 elif part.endswith(':'):
-    #                     formatted_insights.append(f"**{part}**")
-    #                 else:
-    #                     formatted_insights.append(part)
-    #         st.markdown('\n\n'.join(formatted_insights))
-    #     else:
-    #         st.write(insights)
-    # else:
-    #     st.info("No AI-generated insights available")
-
 def is_numeric_string(s):
     try:
         float(s)

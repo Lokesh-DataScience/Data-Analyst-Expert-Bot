@@ -113,3 +113,25 @@ class APIClient:
             except Exception as fallback_e:
                 raise Exception(f"Data analysis failed: {e}, Fallback failed: {fallback_e}")
 
+    def generate_sql_query(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate SQL query from natural language description"""
+        try:
+            response = requests.post(
+                f"{self.base_url}/generate-sql",
+                json=payload,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            # Fallback to a simpler endpoint if available
+            try:
+                response = requests.post(
+                    f"{self.base_url}/sql-query",
+                    json=payload,
+                    timeout=self.timeout
+                )
+                response.raise_for_status()
+                return response.json()
+            except Exception as fallback_e:
+                raise Exception(f"SQL generation failed: {e}, Fallback failed: {fallback_e}")
