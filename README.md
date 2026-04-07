@@ -112,6 +112,87 @@ After augmentation the user sees before/after row counts, a full change log, a s
 
 ---
 
+## 🛠️ Natural Language to SQL Query Generator
+
+The SQL Query Generator lets you describe what you want in plain English and instantly receive a production-ready SQL query — no SQL expertise required.
+
+**How it works in three steps:**
+
+**Step 1 — Describe your query**  
+Type a plain English description of what data you want. For example:
+> *"Show me the top 10 customers by total revenue from completed orders in the last 90 days, only include customers with at least 2 orders."*
+
+**Step 2 — Provide context (optional but recommended)**  
+Paste your table schema as DDL, or upload a CSV file to let the bot auto-detect column names and data types. Also select your database dialect and the type of query you need.
+
+**Step 3 — Get your query**  
+The bot returns three things:
+- ✅ A ready-to-run SQL query formatted for your chosen database
+- 📖 A plain English explanation of what the query does and why
+- 💡 Optimization suggestions such as index recommendations or alternative approaches
+
+You can download the result as a `.sql` file directly from the interface.
+
+---
+
+**Supported databases:**
+
+| Database | Dialect Support |
+|---|---|
+| PostgreSQL | ✅ Full |
+| MySQL | ✅ Full |
+| SQLite | ✅ Full |
+| Microsoft SQL Server | ✅ Full |
+| Oracle | ✅ Full |
+| Google BigQuery | ✅ Full |
+| Snowflake | ✅ Full |
+
+---
+
+**Supported query types:**
+
+- SELECT / Fetch Data
+- INSERT / Add Data
+- UPDATE / Modify Data
+- DELETE / Remove Data
+- JOIN / Combine Tables
+- Aggregation / GROUP BY
+- Subquery / CTE
+- Other / Custom
+
+---
+
+**Example input → output:**
+
+**Input description:**
+```Find all customers who placed more than 3 orders in the last 30 days,
+sorted by total spend descending.```
+
+Generated query:
+```sql
+SELECT
+    c.id,
+    c.name,
+    c.country,
+    COUNT(o.id)   AS order_count,
+    SUM(o.total)  AS total_spent
+FROM customers c
+JOIN orders o
+    ON o.customer_id = c.id
+WHERE
+    o.status      = 'completed'
+    AND o.created_at >= NOW() - INTERVAL '30 days'
+GROUP BY
+    c.id, c.name, c.country
+HAVING
+    COUNT(o.id) > 3
+ORDER BY
+    total_spent DESC;
+```
+
+> **Note:** Generated queries are never executed server-side. The bot returns query text only — your database stays safe.
+
+---
 ## 📚 Data Sources
 
 - [GeeksforGeeks](https://geeksforgeeks.org)
