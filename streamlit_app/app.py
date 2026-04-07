@@ -11,6 +11,8 @@ from components.data_analysis import display_analysis_results
 from utils.session_manager import SessionManager
 from utils.api_client import APIClient
 import pandas as pd
+import base64
+
 # Page configuration
 st.set_page_config(
     page_title=AppConfig.PAGE_TITLE,
@@ -42,7 +44,7 @@ def main():
     )
 
     # Main content area
-    tab1, tab2, tab3 = st.tabs(["💬 Chat Analysis", "📊 Data Upload & Analysis", "🛠️ SQL Query Generator"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat Analysis", "📊 Data Upload & Analysis", "🛠️ SQL Query Generator", "🔧 Data Augmentation"])
 
     with tab1:
         st.subheader("💬 Chat or Upload a File")
@@ -184,6 +186,152 @@ def main():
 
                 except Exception as e:
                     st.error(f"❌ An error occurred while generating the query: {e}")
+        with tab4:
+            st.subheader("🔧 Auto Data Augmentation")
+            st.caption("Automatically detect and fix data quality issues before analysis.")
+
+            aug_file = st.file_uploader(
+                "Upload CSV file",
+                type=AppConfig.ALLOWED_CSV_TYPES,
+                key="aug_csv"
+            )
+
+            if aug_file:
+                # Clear state when a new file is uploaded
+                if st.session_state.get("aug_last_file") != aug_file.name:
+                    st.session_state.pop("aug_diagnosis", None)
+                    st.session_state.pop("aug_result", None)
+                    st.session_state.aug_last_file = aug_file.name
+
+                file_details = get_file_details(aug_file)
+                st.table(pd.DataFrame(file_details.items(), columns=["Property", "Value"]))
+
+                # ── STAGE 1: Diagnose ──────────────────────────────────────────
+                if st.button("🔍 Diagnose Data", type="primary", use_container_width=True):
+                    b64, filename = encode_csv_file(aug_file)
+                    with st.spinner("Scanning your data for issues..."):
+                        diagnosis = api_client.diagnose_data({
+                            "csv_base64": b64,
+                            "csv_filename": filename,
+                            "session_id": session_manager.get_session_id()
+                        })
+                    st.session_state.aug_diagnosis = diagnosis
+                    st.session_state.aug_b64 = b64
+                    st.session_state.aug_filename = filename
+
+                # ── Show diagnosis results ─────────────────────────────────────
+                if "aug_diagnosis" in st.session_state:
+                    diagnosis = st.session_state.aug_diagnosis
+
+                    if diagnosis.get("has_issues"):
+                        st.warning(f"⚠️ Found {len(diagnosis['issues'])} issue(s) in your dataset.")
+                    else:
+                        st.success("✅ No major issues detected.")
+
+                    # Issues summary
+                    for issue in diagnosis.get("issues", []):
+                        st.markdown(f"- {issue}")
+
+                    # Recommendations table
+                    recs = diagnosis.get("recommendations", [])
+                    if recs:
+                        st.markdown("**📋 Augmentation Plan:**")
+                        rec_df = pd.DataFrame([{
+                            "Type": r["type"].replace("_", " ").title(),
+                            "Description": r["description"],
+                            "Severity": r.get("severity", "—").upper()
+                        } for r in recs])
+                        st.dataframe(rec_df, use_container_width=True, hide_index=True)
+
+                    # ── STAGE 2: Options ───────────────────────────────────────
+                    st.markdown("---")
+                    st.markdown("**⚙️ Select Augmentation Options:**")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        apply_imputation = st.checkbox("🩹 Impute Missing Values", value=True)
+                        apply_outliers = st.checkbox("📐 Treat Outliers (Winsorize)", value=True)
+                        apply_dedup = st.checkbox("🗑️ Remove Duplicates", value=True)
+                    with col2:
+                        apply_transform = st.checkbox("📈 Fix Skewed Distributions (Log)", value=False)
+                        apply_synthetic = st.checkbox(
+                            "🧬 Generate Synthetic Rows",
+                            value=False,
+                            help="Adds Gaussian-noise rows to expand small datasets. Use with caution."
+                        )
+
+                    if st.button("⚡ Apply Augmentation", type="primary", use_container_width=True):
+                        with st.spinner("Augmenting your data..."):
+                            result = api_client.augment_data({
+                                "csv_base64": st.session_state.aug_b64,
+                                "csv_filename": st.session_state.aug_filename,
+                                "session_id": session_manager.get_session_id(),
+                                "apply_imputation": apply_imputation,
+                                "apply_outlier_treatment": apply_outliers,
+                                "apply_deduplication": apply_dedup,
+                                "apply_transformations": apply_transform,
+                                "apply_synthetic_rows": apply_synthetic
+                            })
+                        st.session_state.aug_result = result
+
+                # ── STAGE 3: Results ───────────────────────────────────────────
+                if "aug_result" in st.session_state:
+                    result = st.session_state.aug_result
+
+                    if not result.get("success"):
+                        st.error(f"❌ {result.get('message', 'Augmentation failed.')}")
+                    else:
+                        orig_rows, orig_cols = result["original_shape"]
+                        aug_rows, aug_cols = result["augmented_shape"]
+
+                        st.success("✅ Augmentation Complete!")
+
+                        # Before / after metrics
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Rows Before", orig_rows, delta=None)
+                        m2.metric("Rows After", aug_rows, delta=f"+{aug_rows - orig_rows}" if aug_rows > orig_rows else str(aug_rows - orig_rows))
+                        m3.metric("Columns", aug_cols)
+
+                        # Change log
+                        change_log = result.get("change_log", [])
+                        if change_log:
+                            with st.expander("📝 Change Log", expanded=True):
+                                for entry in change_log:
+                                    st.markdown(f"**{entry['step']}** — {entry['detail']}")
+
+                        # Side-by-side preview
+                        with st.expander("🔍 Data Preview (Before vs After)"):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.markdown("**Original**")
+                                st.dataframe(pd.DataFrame(result["sample_original"]), use_container_width=True)
+                            with c2:
+                                st.markdown("**Augmented**")
+                                st.dataframe(pd.DataFrame(result["sample_augmented"]), use_container_width=True)
+
+                        # Download augmented CSV
+                        augmented_bytes = base64.b64decode(result["augmented_csv_base64"])
+                        st.download_button(
+                            label="⬇️ Download Augmented CSV",
+                            data=augmented_bytes,
+                            file_name=result["augmented_filename"],
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+
+                        # Feed into analysis
+                        st.markdown("---")
+                        if st.button("📊 Run Analysis on Augmented Data", use_container_width=True):
+                            with st.spinner("Analyzing augmented data..."):
+                                analysis = api_client.analyze_data({
+                                    "csv_base64": result["augmented_csv_base64"],
+                                    "csv_filename": result["augmented_filename"],
+                                    "session_id": session_manager.get_session_id()
+                                })
+                            st.session_state.aug_analysis = analysis
+
+                        if "aug_analysis" in st.session_state:
+                            display_analysis_results(st.session_state.aug_analysis)
     st.markdown(
         """
         <hr style="margin-top:2em;margin-bottom:0.5em;">

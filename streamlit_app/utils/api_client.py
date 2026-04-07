@@ -135,3 +135,29 @@ class APIClient:
                 return response.json()
             except Exception as fallback_e:
                 raise Exception(f"SQL generation failed: {e}, Fallback failed: {fallback_e}")
+            
+    def diagnose_data(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Run diagnosis scan on uploaded CSV"""
+        try:
+            response = requests.post(
+                f"{self.base_url}/diagnose-data",
+                json=payload,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise Exception(f"Diagnosis failed: {e}")
+
+    def augment_data(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply augmentation to uploaded CSV"""
+        try:
+            response = requests.post(
+                f"{self.base_url}/augment-data",
+                json=payload,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise Exception(f"Augmentation failed: {e}")

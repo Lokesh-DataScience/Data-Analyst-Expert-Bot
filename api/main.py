@@ -20,6 +20,7 @@ from diskcache import Cache
 import hashlib
 import pandas as pd
 from utils.data_analyzer import DataAnalyzer
+from utils.data_augmentor import DataAugmentor
 
 # Set up cache directory
 cache = Cache(directory="./.cache")
@@ -77,10 +78,20 @@ class MultiUploadQueryRequest(BaseModel):
 
 class SQLGenerationRequest(BaseModel):
     description: str
-    schema: Optional[str] = None
+    db_schema: Optional[str] = None
     db_type: Optional[str] = "PostgreSQL"
     query_type: Optional[str] = None
     session_id: Optional[str] = None
+
+class DataAugmentationRequest(BaseModel):
+    csv_base64: str
+    csv_filename: str
+    session_id: Optional[str] = None
+    apply_imputation: bool = True
+    apply_outlier_treatment: bool = True
+    apply_synthetic_rows: bool = False  # Off by default — user must opt in
+    apply_deduplication: bool = True
+    apply_transformations: bool = False  # Log/Box-Cox — opt in
 
 def update_memory_and_history(memory, chat_history, session_id: str):
     session_key = session_id or "default"
@@ -668,7 +679,7 @@ def generate_sql_endpoint(request: SQLGenerationRequest):
     """
     try:
         # Build a structured prompt for the SQL generation
-        schema_section = f"\n\nDatabase Schema:\n{request.schema}" if request.schema else ""
+        schema_section = f"\n\nDatabase Schema:\n{request.db_schema}" if request.db_schema else ""
         query_type_section = f"\nQuery Type: {request.query_type}" if request.query_type else ""
 
         prompt = f"""You are an expert SQL developer. Generate a SQL query based on the following:
@@ -776,3 +787,81 @@ Respond ONLY in the following JSON format (no markdown, no extra text):
                     "error_type": "generation_error"
                 }
             )
+
+@app.post("/diagnose-data")
+def diagnose_data_endpoint(request: DataAugmentationRequest):
+    """
+    Stage 1: Scan the CSV and return an augmentation plan without modifying data.
+    """
+    try:
+        csv_bytes = base64.b64decode(request.csv_base64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(csv_bytes)
+            tmp_path = tmp.name
+
+        try:
+            df = pd.read_csv(tmp_path)
+            augmentor = DataAugmentor()
+            diagnosis = augmentor.diagnose(df)
+            return JSONResponse(content={"success": True, "diagnosis": convert_to_serializable(diagnosis)})
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "success": False,
+            "error": "Diagnosis failed",
+            "message": str(e)
+        })
+
+
+@app.post("/augment-data")
+def augment_data_endpoint(request: DataAugmentationRequest):
+    """
+    Stage 2 & 3: Apply augmentation based on user-selected options and return
+    augmented CSV + change log.
+    """
+    try:
+        csv_bytes = base64.b64decode(request.csv_base64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(csv_bytes)
+            tmp_path = tmp.name
+
+        try:
+            df = pd.read_csv(tmp_path)
+            augmentor = DataAugmentor()
+
+            options = {
+                "apply_imputation": request.apply_imputation,
+                "apply_outlier_treatment": request.apply_outlier_treatment,
+                "apply_synthetic_rows": request.apply_synthetic_rows,
+                "apply_deduplication": request.apply_deduplication,
+                "apply_transformations": request.apply_transformations,
+            }
+
+            augmented_df, change_log = augmentor.augment(df, options)
+
+            # Encode augmented CSV back to base64
+            csv_buffer = augmented_df.to_csv(index=False)
+            augmented_b64 = base64.b64encode(csv_buffer.encode("utf-8")).decode("utf-8")
+
+            return JSONResponse(content={
+                "success": True,
+                "original_shape": list(df.shape),
+                "augmented_shape": list(augmented_df.shape),
+                "change_log": convert_to_serializable(change_log),
+                "augmented_csv_base64": augmented_b64,
+                "augmented_filename": f"augmented_{request.csv_filename}",
+                "sample_original": convert_to_serializable(df.head()),
+                "sample_augmented": convert_to_serializable(augmented_df.head())
+            })
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "success": False,
+            "error": "Augmentation failed",
+            "message": str(e),
+            "error_type": "augmentation_error"
+        })
