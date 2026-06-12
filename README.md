@@ -212,19 +212,19 @@ LANGSMITH_API_KEY=your_langsmith_api_key
 
 Run the scrapers in the `data/scrapers/` folder to populate `data/data.jsonl` with chunked content:
 ```bash
-python data/scrapers/gfg_scraper.py
-python data/scrapers/pointtech_scraper.py
-python data/scrapers/towardsdatascience_scrapper.py
+uv run data/scrapers/gfg_scraper.py
+uv run data/scrapers/pointtech_scraper.py
+uv run data/scrapers/towardsdatascience_scrapper.py
 ```
 
 ### 5. Build the Vector Database
 ```bash
-python data/vector_db/faiss_db.py
+uv run data/vector_db/faiss_db.py
 ```
 
 ### 6. Start the Backend API
 ```bash
-uvicorn api.main:app --reload
+uv run uvicorn api.main:app --reload
 ```
 
 ### 7. Launch the Frontend
@@ -232,7 +232,7 @@ uvicorn api.main:app --reload
 The frontend is a static HTML/CSS/JS app — no build tools required. Open `frontend/index.html` directly in your browser, or serve it locally:
 ```bash
 cd frontend
-python -m http.server 5500
+uv run python -m http.server 5500
 ```
 Then open [http://localhost:5500](http://localhost:5500).
 
