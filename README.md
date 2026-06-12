@@ -7,11 +7,12 @@
 ## 🚀 Features
 
 - **Conversational AI**: Chat with an LLM (Llama 3/4 via Groq) about any data analysis topic.
+- **User Authentication**: Sign up and sign in with email/password to access your personal workspace. Sessions are token-based (`Authorization: Bearer <token>`), with a "remember me" option and a demo login mode for quick exploration.
 - **Multi-File Upload & Analysis**: Upload and analyze images (charts, screenshots), CSV/Excel files, and PDFs **simultaneously**. The bot uses all provided files as context for your question via the `/multi-upload` endpoint.
 - **Data Cleaning & Analysis Endpoints**: Use `/analyze-data` for full AI-powered analysis (cleaning, stats, insights, visualizations) and `/clean-data` for fast, quota-free cleaning and summary.
 - **SQL Query Generator**: Describe what you want in plain English, provide an optional schema or upload a CSV to auto-detect columns, and get a ready-to-run SQL query with a full explanation and optimization suggestions. Supports PostgreSQL, MySQL, SQLite, SQL Server, Oracle, BigQuery, and Snowflake.
 - **Auto Data Augmentation**: Upload a CSV and let the bot automatically diagnose data quality issues — missing values, outliers, duplicates, skewed distributions, and class imbalance — then apply fixes in one click. Download the cleaned dataset or feed it directly into analysis.
-- **Modern GUI**: Redesigned Streamlit interface with tabs for chat, data upload, SQL generation, and data augmentation, plus sidebar controls, recent chat management, and raw data preview.
+- **Modern HTML/CSS/JS GUI**: A standalone, dependency-free frontend with a login/signup flow and a dashboard featuring tabs for chat, data upload, SQL generation, and data augmentation, plus a sidebar with session history, API status indicator, and user account controls.
 - **Image Understanding**: Upload images and ask questions about them. The bot uses a multimodal LLM to analyze and respond, then grounds the answer using your chat history and knowledge base.
 - **CSV Data Analysis**: Upload a CSV file and ask questions about its content. The bot uses the CSV content as context for the LLM, providing data-aware answers.
 - **PDF Data Analysis**: Upload a PDF file and ask questions about its content. The bot extracts text from the PDF and uses it as context for the LLM, enabling document-aware responses.
@@ -22,7 +23,6 @@
 - **Session Memory**: Each user session maintains its own chat history for context-aware conversations.
 - **Recent Chats**: All conversations are saved and can be resumed from the sidebar.
 - **Custom Vector Database**: Fast, semantic search over chunked documents using FAISS and HuggingFace embeddings.
-- **Modern UI**: Built with Streamlit for a clean, interactive chat experience.
 - **Extensible Scrapers**: Easily add new data sources with modular web scrapers.
 
 ---
@@ -38,11 +38,13 @@
 ```mermaid
 flowchart TD
     subgraph "👤 User Interface"
-        A[👤 User] -->|📤 Uploads Files & Asks Questions| B[🖥️ Streamlit Web App]
+        A[👤 User] -->|🔐 Signs In| AUTH[🔑 Login / Signup]
+        AUTH -->|📤 Uploads Files & Asks Questions| B[🖥️ HTML/CSS/JS Web App]
     end
 
     subgraph "🔄 Processing Layer"
-        B -->|📡 Sends Request| C[⚡ FastAPI Server]
+        B -->|📡 Sends Authenticated Request| C[⚡ FastAPI Server]
+        C -->|🔑 Verifies Token| AUTHSVC[🔐 Auth Service]
         C -->|💾 Stores Uploads| J[📁 File Storage]
         C -->|🔍 Retrieves Context| E[🗄️ Vector Database]
         C -->|🧠 Generates Answer| D[🤖 AI Model - Groq]
@@ -57,11 +59,13 @@ flowchart TD
         I[⚡ Cache Storage]
         K[💬 Chat History]
         H[🕷️ Web Scrapers]
+        U[👥 User Accounts]
     end
 
     %% Data Flow
     E --> F
     H -->|📊 Adds Scraped Data| E
+    AUTHSVC --> U
     C -->|💾 Saves Session| G
     C -->|⚡ Caches Results| I
     C -->|💬 Stores Chats| K
@@ -73,10 +77,24 @@ flowchart TD
     C -->|📋 Final Answer| B
     B -->|📺 Shows Result| A
 
-    class A,B userStyle
-    class C,D,J,L,M processStyle
-    class E,F,G,H,I,K storageStyle
+    class A,B,AUTH userStyle
+    class C,D,J,L,M,AUTHSVC processStyle
+    class E,F,G,H,I,K,U storageStyle
 ```
+
+---
+
+## 🔐 Authentication
+
+The frontend includes a login and signup screen, separate from the main dashboard.
+
+- **Sign up**: Create an account with a name, email, and password.
+- **Sign in**: Authenticate with email and password, with an optional "remember me" to persist your session across browser restarts.
+- **Demo login**: Skip account creation and explore the dashboard with a temporary demo session.
+- **Session token**: On successful login/signup, the backend returns a token that the frontend stores and sends as `Authorization: Bearer <token>` on every API request.
+- **Sign out**: Clears the stored session and returns to the login screen.
+
+> **Backend note:** The frontend expects `POST /auth/login` and `POST /auth/signup` endpoints returning `{ "token": "...", "user": { "name": "...", "email": "..." } }`. If these endpoints are not yet implemented (HTTP 404) or the API is unreachable, the frontend automatically falls back to a local demo session so the UI remains fully usable during development.
 
 ---
 
@@ -205,7 +223,7 @@ All articles are scraped, chunked (500 chars), and stored in `data/data.jsonl` f
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: [Streamlit](https://streamlit.io/)
+- **Frontend**: Standalone HTML, CSS, and JavaScript (no build step or framework required) with login/signup authentication screens
 - **Backend**: [FastAPI](https://fastapi.tiangolo.com/)
 - **LLM**: [Groq Llama 3 & Multimodal Llama 4](https://groq.com/)
 - **Vector DB**: [FAISS](https://github.com/facebookresearch/faiss)
@@ -213,7 +231,7 @@ All articles are scraped, chunked (500 chars), and stored in `data/data.jsonl` f
 - **Web Scraping**: [Selenium](https://selenium.dev/)
 - **Data Augmentation**: [scikit-learn](https://scikit-learn.org/) + [SciPy](https://scipy.org/)
 - **Session Memory**: In-memory per-session chat history
-- **Caching**: DiskCache and Streamlit cache for fast file and context retrieval
+- **Caching**: DiskCache for fast file and context retrieval
 
 ---
 
@@ -259,24 +277,31 @@ python vector_db/faiss_db.py
 uvicorn api.main:app --reload
 ```
 
-### 7. Launch the Streamlit Frontend
+### 7. Launch the Frontend
+
+The frontend is a static HTML/CSS/JS app — no build tools required. Open `frontend/index.html` directly in your browser, or serve it locally:
 ```bash
-streamlit run streamlit_app/app.py
+cd frontend
+python -m http.server 5500
 ```
+Then open [http://localhost:5500](http://localhost:5500).
+
+On first load you'll see the **sign in / sign up** screen. Use **Continue with demo account** to explore the dashboard without creating an account, or sign up to create a persistent session. Make sure the API base URL in the sidebar points to your running FastAPI server (default `http://localhost:8000`).
 
 ---
 
 ## 💬 Usage
 
-- Open [http://localhost:8501](http://localhost:8501) in your browser.
+- Open the frontend in your browser and sign in (or use the demo login).
 - Ask questions about data analysis, tools, or techniques.
 - **To analyze an image:** Upload a jpg, jpeg, or png file and enter your question. The bot will analyze the image and respond.
 - **To analyze a CSV:** Upload a CSV file and ask a question about its content. The bot will use the CSV data as context for its answer.
 - **To analyze a PDF:** Upload a PDF file and ask a question about its content. The bot will use the PDF text as context for its answer.
-- **To generate a SQL query:** Go to the **🛠️ SQL Query Generator** tab. Paste your schema (or upload a CSV to auto-detect columns), select your database type and query type, describe what you want in plain English, and click **⚡ Generate SQL Query**. The bot returns a ready-to-run query, a plain English explanation, and optimization suggestions you can download as a `.sql` file.
-- **To augment a dataset:** Go to the **🔧 Data Augmentation** tab. Upload a CSV, click **🔍 Diagnose Data** to see a full issues report and recommended fixes, toggle which steps to apply, then click **⚡ Apply Augmentation**. Review the change log and before/after preview, download the cleaned CSV, or click **📊 Run Analysis on Augmented Data** to analyze it immediately.
+- **To generate a SQL query:** Go to the **SQL Generator** tab. Paste your schema (or upload a CSV to auto-detect columns), select your database type and query type, describe what you want in plain English, and click **Generate SQL query**. The bot returns a ready-to-run query, a plain English explanation, and optimization suggestions you can download as a `.sql` file.
+- **To augment a dataset:** Go to the **Data Augmentation** tab. Upload a CSV, click **Diagnose data** to see a full issues report and recommended fixes, toggle which steps to apply, then click **Apply augmentation**. Review the change log and before/after preview, download the cleaned CSV, or click **Run analysis on augmented data** to analyze it immediately.
 - **Note:** You can upload up to 3 images every 6 hours. If you reach the limit, you can still ask text questions.
 - **Resume conversations:** Select any recent chat from the sidebar to continue where you left off.
+- **Sign out:** Use the sign-out icon next to your account name in the sidebar.
 
 ---
 
@@ -291,6 +316,13 @@ DataAnalystBot/
 │   └── rag_chain.py
 ├── data/                 # Chunked knowledge base (JSONL)
 │   └── data.jsonl
+├── frontend/             # Standalone HTML/CSS/JS UI
+│   ├── index.html
+│   ├── css/
+│   │   └── styles.css
+│   └── js/
+│       ├── auth.js
+│       └── app.js
 ├── loaders/              # Data loading utilities
 │   ├── load_data.py
 │   ├── load_csv.py
@@ -301,12 +333,6 @@ DataAnalystBot/
 │   ├── gfg_scraper.py
 │   ├── pointtech_scraper.py
 │   └── towardsdatascience_scrapper.py
-├── streamlit_app/        # Streamlit UI
-│   ├── components/
-│   ├── config/
-│   ├── styles/
-│   ├── utils/
-│   └── app.py
 ├── utils/                # Backend utilities
 │   ├── data_analyzer.py
 │   └── data_augmentor.py
@@ -326,6 +352,7 @@ DataAnalystBot/
 - **Switch between full analysis and fast cleaning**: Use `/analyze-data` for AI-powered insights, or `/clean-data` for quick cleaning and stats.
 - **Extend SQL generation**: The `/generate-sql` endpoint accepts any schema DDL and supports all major SQL dialects. Add dialect-specific prompt templates in `api/main.py` to further tailor output.
 - **Extend augmentation**: Add new augmentation steps in `utils/data_augmentor.py` by adding a method and registering it in the `augment()` dispatcher. SMOTE-based oversampling can be enabled by installing `imbalanced-learn` and extending `_generate_synthetic_rows()`.
+- **Implement authentication**: Add `POST /auth/login` and `POST /auth/signup` routes returning a session token and user profile. The frontend is already wired to send `Authorization: Bearer <token>` on every request once these are in place.
 
 ---
 
@@ -335,6 +362,7 @@ DataAnalystBot/
 - API keys are loaded from `.env` and never exposed to the frontend.
 - Generated SQL queries are not executed server-side — the bot only returns query text, keeping your database safe.
 - Data augmentation is performed entirely server-side in memory — uploaded CSVs are written to a temporary file, processed, and immediately deleted.
+- Authentication tokens are stored client-side (in `localStorage` or `sessionStorage` depending on "remember me") and sent only to the configured API base URL.
 
 ---
 
@@ -357,7 +385,6 @@ MIT License. See [LICENSE](LICENSE) for details.
 - [Groq](https://groq.com/)
 - [HuggingFace](https://huggingface.co/)
 - [FAISS](https://github.com/facebookresearch/faiss)
-- [Streamlit](https://streamlit.io/)
 - [Selenium](https://selenium.dev/)
 - [scikit-learn](https://scikit-learn.org/)
 - [SciPy](https://scipy.org/)
