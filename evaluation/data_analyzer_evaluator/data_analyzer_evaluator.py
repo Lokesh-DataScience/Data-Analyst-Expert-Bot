@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import utils.data_analyzer as dataanalyzer
+import api.utils.data_analyzer as dataanalyzer
 
 class DataAnalyzerEvaluator:
     def __init__(self):

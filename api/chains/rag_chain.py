@@ -7,7 +7,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
 from langchain_core.runnables.base import RunnableSequence
-from vector_db.faiss_db import EMBEDDING
+from data.vector_db.faiss_db import EMBEDDING
 
 LLM = ChatGroq(
     model_name="meta-llama/llama-4-scout-17b-16e-instruct",

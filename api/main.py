@@ -18,8 +18,8 @@ from api.loaders.docs_loader import DocumentLoader
 from diskcache import Cache
 import hashlib
 import pandas as pd
-from utils.data_analyzer import DataAnalyzer
-from utils.data_augmentor import DataAugmentor
+from api.utils.data_analyzer import DataAnalyzer
+from api.utils.data_augmentor import DataAugmentor
 
 # Set up cache directory
 cache = Cache(directory="./.cache")
