@@ -1,0 +1,13 @@
+[
+    {
+    "id": 1,
+    "question": "Get top 2 regions by total revenue",
+    "db_type": "SQLite",
+    "schema": "CREATE TABLE sales (\n  id INTEGER PRIMARY KEY,\n  region TEXT,\n  revenue INTEGER\n);",
+    "ground_truth_sql": "SELECT region, SUM(revenue) AS total_revenue FROM sales GROUP BY region ORDER BY total_revenue DESC LIMIT 2;",
+    "expected_result": [
+        {"region": "South", "total_revenue": 7000},
+        {"region": "North", "total_revenue": 5000}
+        ]
+    }
+]

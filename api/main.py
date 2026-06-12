@@ -6,16 +6,15 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from chains.rag_chain import build_chain, build_contextual_chain
+from api.chains.rag_chain import build_chain, build_contextual_chain
 from typing import List, Dict, Optional
-from memory.session_memory import get_memory
+from api.memory.session_memory import get_memory
 from langchain_core.messages import HumanMessage, AIMessage
 from groq import Groq
 import base64
 import tempfile
 import os
-from loaders.load_csv import load_csv
-from loaders.load_pdf import PyPDFLoader
+from api.loaders.docs_loader import DocumentLoader
 from diskcache import Cache
 import hashlib
 import pandas as pd
@@ -36,29 +35,19 @@ app = FastAPI()
 # CORS for Streamlit
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8501"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+LOADER = DocumentLoader()
 
 # Input schemas
 class QueryRequest(BaseModel):
     question: str
     chat_history: Optional[List[Dict]] = None
     session_id: Optional[str] = None
-
-class ImageQueryRequest(QueryRequest):
-    image_base64: str
-    image_type: str
-
-class CSVQueryRequest(QueryRequest):
-    csv_base64: str
-    csv_filename: str
-
-class PdfQueryRequest(QueryRequest):
-    pdf_base64: str
-    pdf_filename: str
 
 class DataAnalysisRequest(BaseModel):
     csv_base64: str
@@ -193,7 +182,7 @@ def get_csv_context(csv_base64: str, question: str = "") -> str:
         tmp_csv_path = tmp_csv.name
     
     try:
-        csv_docs = load_csv(tmp_csv_path)
+        csv_docs = LOADER.load_csv(tmp_csv_path)
         csv_context = "\n".join([doc.page_content for doc in csv_docs])
         cache[csv_key] = csv_context
         return csv_context
@@ -212,88 +201,12 @@ def get_pdf_context(pdf_base64: str, question: str = "") -> str:
         tmp_pdf_path = tmp_pdf.name
     
     try:
-        loader = PyPDFLoader(tmp_pdf_path)
-        pdf_docs = loader.load()
+        pdf_docs = LOADER.load_pdf(tmp_pdf_path)
         pdf_context = "\n".join([doc.page_content for doc in pdf_docs])
         cache[pdf_key] = pdf_context
         return pdf_context
     finally:
         os.unlink(tmp_pdf_path)
-
-def process_contextual_request(question: str, context: str, chat_history: Optional[List[Dict]], session_id: str) -> str:
-    """Process request with context and return response"""
-    contextual_chain = build_contextual_chain()
-    memory = get_memory(session_id or "default")
-    session_key = session_id or "default"
-
-    # Update memory + store human message
-    chat_history_str = update_memory_and_history(memory, chat_history, session_key)
-
-    # Invoke model
-    response = contextual_chain.invoke({
-        "input": question,
-        "chat_history": chat_history_str,
-        "context": context
-    })
-
-    # Append AI response to history
-    answer = response.content if hasattr(response, "content") else str(response)
-    chat_store.setdefault(session_key, [])
-    chat_store[session_key].append({
-        "type": "ai",
-        "content": answer
-    })
-    cache["chat_store"] = chat_store
-
-    return answer
-
-@app.post("/image-upload")
-def image_upload_endpoint(request: ImageQueryRequest):
-    # Add file metadata to chat history
-    if request.chat_history:
-        for msg in request.chat_history:
-            if msg["type"] == "human":
-                msg["file"] = {
-                    "type": "image",
-                    "format": request.image_type,
-                    "base64": request.image_base64
-                }
-
-    image_context = get_image_context(request.image_base64, request.image_type)
-    answer = process_contextual_request(request.question, image_context, request.chat_history, request.session_id)
-    return {"response": answer}
-
-@app.post("/csv-upload")
-def csv_upload_endpoint(request: CSVQueryRequest):
-    # Add file metadata to chat history
-    if request.chat_history:
-        for msg in request.chat_history:
-            if msg["type"] == "human":
-                msg["file"] = {
-                    "type": "csv",
-                    "name": request.csv_filename,
-                    "base64": request.csv_base64
-                }
-
-    csv_context = get_csv_context(request.csv_base64, request.question)
-    answer = process_contextual_request(request.question, csv_context, request.chat_history, request.session_id)
-    return {"response": answer}
-
-@app.post("/pdf-upload")
-def pdf_upload_endpoint(request: PdfQueryRequest):
-    # Add file metadata to chat history
-    if request.chat_history:
-        for msg in request.chat_history:
-            if msg["type"] == "human":
-                msg["file"] = {
-                    "type": "pdf",
-                    "name": request.pdf_filename,  
-                    "base64": request.pdf_base64
-                }
-
-    pdf_context = get_pdf_context(request.pdf_base64, request.question)
-    answer = process_contextual_request(request.question, pdf_context, request.chat_history, request.session_id)
-    return {"response": answer}
 
 @app.post("/multi-upload")
 def multi_upload_endpoint(request: MultiUploadQueryRequest):
@@ -707,7 +620,7 @@ Respond ONLY in the following JSON format (no markdown, no extra text):
                     "content": prompt
                 }
             ],
-            model="meta-llama/llama-4-maverick-17b-128e-instruct",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.1  # Low temperature for deterministic SQL output
         )
 
