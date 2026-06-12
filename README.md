@@ -195,9 +195,9 @@ cd DataAnalystBot
 
 ### 2. Install Dependencies
 ```bash
-python -m venv .venv
+uv venv
 .venv\Scripts\activate  # On Windows
-pip install -r requirements.txt
+uv add -r requirements.txt
 ```
 
 ### 3. Set Up Environment Variables
