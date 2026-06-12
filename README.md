@@ -29,58 +29,8 @@
 
 ## 📸 Screenshots
 
-![Chat UI Example](https://github.com/user-attachments/assets/10652ec2-e53e-46a3-bb3c-13f2ccd7c34a)
-*Chat with DataAnalystBot about Power BI for data analysis!*
-
----
-
-## 🏗️ Architecture Overview
-```mermaid
-flowchart TD
-    subgraph "👤 User Interface"
-        A[👤 User] -->|🔐 Signs In| AUTH[🔑 Login / Signup]
-        AUTH -->|📤 Uploads Files & Asks Questions| B[🖥️ HTML/CSS/JS Web App]
-    end
-
-    subgraph "🔄 Processing Layer"
-        B -->|📡 Sends Authenticated Request| C[⚡ FastAPI Server]
-        C -->|🔑 Verifies Token| AUTHSVC[🔐 Auth Service]
-        C -->|💾 Stores Uploads| J[📁 File Storage]
-        C -->|🔍 Retrieves Context| E[🗄️ Vector Database]
-        C -->|🧠 Generates Answer| D[🤖 AI Model - Groq]
-        C -->|🛠️ Generates SQL| L[📝 SQL Generator]
-        C -->|🔧 Cleans & Enriches| M[🧬 Data Augmentor]
-    end
-
-    subgraph "💾 Data Storage"
-        E[🗄️ FAISS Vector Database]
-        F[🔤 HuggingFace Embeddings]
-        G[💭 Session Memory]
-        I[⚡ Cache Storage]
-        K[💬 Chat History]
-        H[🕷️ Web Scrapers]
-        U[👥 User Accounts]
-    end
-
-    %% Data Flow
-    E --> F
-    H -->|📊 Adds Scraped Data| E
-    AUTHSVC --> U
-    C -->|💾 Saves Session| G
-    C -->|⚡ Caches Results| I
-    C -->|💬 Stores Chats| K
-    L -->|✅ SQL + Explanation| C
-    M -->|✅ Augmented CSV + Log| C
-
-    %% Response Flow
-    D -->|✅ AI Response| C
-    C -->|📋 Final Answer| B
-    B -->|📺 Shows Result| A
-
-    class A,B,AUTH userStyle
-    class C,D,J,L,M,AUTHSVC processStyle
-    class E,F,G,H,I,K,U storageStyle
-```
+![Chat UI Example](https://github.com/user-attachments/assets/0e1ee0a9-7685-41e2-925f-882c70c7b6cd)
+*GUI OF DATA-ANALYST-BOT*
 
 ---
 

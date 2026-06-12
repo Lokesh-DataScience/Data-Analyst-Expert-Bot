@@ -520,7 +520,7 @@ details.expander .expander-body{ padding:0 14px 14px; }
 .upload-slot .file-drop svg{ width:18px; height:18px; }
 
 .chat-window{
-  height:440px; overflow-y:auto;
+  height:350px; overflow-y:auto;
   border:1px solid var(--border); border-radius:var(--radius);
   background:var(--bg); padding:20px; margin-bottom:14px;
   display:flex; flex-direction:column; gap:14px;
