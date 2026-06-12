@@ -260,16 +260,16 @@ LANGSMITH_API_KEY=your_langsmith_api_key
 
 ### 4. Scrape and Prepare Data
 
-Run the scrapers in the `scrapers/` folder to populate `data/data.jsonl` with chunked content:
+Run the scrapers in the `data/scrapers/` folder to populate `data/data.jsonl` with chunked content:
 ```bash
-python scrapers/gfg_scraper.py
-python scrapers/pointtech_scraper.py
-python scrapers/towardsdatascience_scrapper.py
+python data/scrapers/gfg_scraper.py
+python data/scrapers/pointtech_scraper.py
+python data/scrapers/towardsdatascience_scrapper.py
 ```
 
 ### 5. Build the Vector Database
 ```bash
-python vector_db/faiss_db.py
+python data/vector_db/faiss_db.py
 ```
 
 ### 6. Start the Backend API
@@ -310,12 +310,29 @@ On first load you'll see the **sign in / sign up** screen. Use **Continue with d
 ```
 DataAnalystBot/
 │
-├── api/                  # FastAPI backend
-│   └── main.py
-├── chains/               # RAG chain construction
-│   └── rag_chain.py
-├── data/                 # Chunked knowledge base (JSONL)
-│   └── data.jsonl
+├── api/                  # FastAPI backend and server-side modules
+│   ├── main.py
+│   ├── chains/           # RAG chain construction (under api)
+│   │   └── rag_chain.py
+│   ├── loaders/          # Data loading utilities (under api)
+│   │   └── docs_loader.py
+│   ├── memory/           # Session memory management (under api)
+│   │   └── session_memory.py
+│   └── utils/            # Backend utilities (under api)
+│       ├── data_analyzer.py
+│       └── data_augmentor.py
+├── data/                 # Chunked knowledge base, scrapers, and vector data
+│   ├── data.jsonl
+│   ├── scrapers/
+│   │   ├── gfg_scraper.py
+│   │   ├── pointtech_scraper.py
+│   │   └── towardsdatascience_scrapper.py
+│   ├── vector_db/        # FAISS DB creation/loading
+│   │   └── faiss_db.py
+│   └── vectorstore_data/
+│       └── index.faiss
+├── evaluation/
+│   └── ...
 ├── frontend/             # Standalone HTML/CSS/JS UI
 │   ├── index.html
 │   ├── css/
@@ -323,21 +340,6 @@ DataAnalystBot/
 │   └── js/
 │       ├── auth.js
 │       └── app.js
-├── loaders/              # Data loading utilities
-│   ├── load_data.py
-│   ├── load_csv.py
-│   └── load_pdf.py
-├── memory/               # Session memory management
-│   └── session_memory.py
-├── scrapers/             # Web scrapers for sources
-│   ├── gfg_scraper.py
-│   ├── pointtech_scraper.py
-│   └── towardsdatascience_scrapper.py
-├── utils/                # Backend utilities
-│   ├── data_analyzer.py
-│   └── data_augmentor.py
-├── vector_db/            # Vector DB creation/loading
-│   └── faiss_db.py
 ├── requirements.txt
 └── README.md
 ```
@@ -348,7 +350,7 @@ DataAnalystBot/
 
 - **Add new sources**: Write a new scraper in `scrapers/`, chunk the content, and append to `data/data.jsonl`.
 - **Change chunk size**: Adjust the `textwrap.wrap(..., width=500)` in scrapers.
-- **Swap LLM or embeddings**: Update model names in `chains/rag_chain.py` or `vector_db/faiss_db.py`.
+- **Swap LLM or embeddings**: Update model names in `api/chains/rag_chain.py` or `data/vector_db/faiss_db.py`.
 - **Switch between full analysis and fast cleaning**: Use `/analyze-data` for AI-powered insights, or `/clean-data` for quick cleaning and stats.
 - **Extend SQL generation**: The `/generate-sql` endpoint accepts any schema DDL and supports all major SQL dialects. Add dialect-specific prompt templates in `api/main.py` to further tailor output.
 - **Extend augmentation**: Add new augmentation steps in `utils/data_augmentor.py` by adding a method and registering it in the `augment()` dispatcher. SMOTE-based oversampling can be enabled by installing `imbalanced-learn` and extending `_generate_synthetic_rows()`.
