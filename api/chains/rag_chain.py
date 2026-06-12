@@ -39,7 +39,7 @@ TEMPLATE = """
 INPUT_VARIABLES = ["context", "input", "chat_history"]
 
 def build_chain():
-    vectorstore = FAISS.load_local("vectorstore_data", EMBEDDING, allow_dangerous_deserialization=True)
+    vectorstore = FAISS.load_local("data\\vectorstore_data", EMBEDDING, allow_dangerous_deserialization=True)
     retriever = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={'k': 6, 'lambda_mult': 0.25}

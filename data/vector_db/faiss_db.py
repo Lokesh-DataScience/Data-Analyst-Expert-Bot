@@ -3,12 +3,12 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from loaders.load_data import load_jsonl
+from api.loaders import docs_loader
 from langchain_core.documents import Document
 
 # vector_db/faiss_db.py
-data = load_jsonl("data/data.jsonl")
-
+LOADER = docs_loader.DocumentLoader()
+data = LOADER.load_jsonl("data/data.jsonl")
 EMBEDDING = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2",
     model_kwargs={"device": "cpu"},
