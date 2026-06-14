@@ -86,6 +86,8 @@ function initApp(){
     document.getElementById('newChatBtn')
       .addEventListener('click', startNewChat);
   });
+
+  safeRun('profileModal', wireProfileModal);
 }
 
 /* ============================================================
@@ -340,11 +342,12 @@ async function sendChatMessage(){
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(payload)
     });
+    if(res.status === 429){ handleRateLimit('chat'); throw new Error('Rate limit reached. Please wait a moment.'); }
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     state.chatHistory.push({ type:'ai', content: data.response || '⚠️ No answer returned.' });
   }catch(e){
-    state.chatHistory.push({ type:'ai', content: '❌ API Error: ' + e.message });
+    state.chatHistory.push({ type:'ai', content: '❌ ' + e.message });
   }
 
   renderChat();
@@ -399,11 +402,11 @@ function wireUploadAnalysis(){
         });
       }
       if(!res.ok) throw new Error('HTTP ' + res.status);
-
       const data = await res.json();
       clearStatus(statusEl);
       resultsEl.innerHTML = renderAnalysis(data);
     }catch(e){
+      if(e.message.includes('429') || e.message.toLowerCase().includes('rate')) handleRateLimit('upload');
       statusBox(statusEl, 'error', '❌ Analysis failed: ' + e.message);
     }
     btn.disabled = false;
@@ -623,6 +626,7 @@ function wireSqlGenerator(){
         a.click();
       });
     }catch(e){
+      if(e.message.includes('429') || e.message.toLowerCase().includes('rate')) handleRateLimit('sql');
       statusBox(statusEl, 'error', '❌ SQL generation failed: ' + e.message);
     }
     btn.disabled = false;
@@ -891,4 +895,150 @@ function renderAugResult(result){
       statusBox(statusEl, 'error', '❌ ' + e.message);
     }
   });
+}
+
+/* ============================================================
+   PROFILE MODAL
+============================================================ */
+function wireProfileModal(){
+  const modal     = document.getElementById('profileModal');
+  const openBtn   = document.getElementById('profileBtn');
+  const closeBtn  = document.getElementById('profileModalClose');
+
+  // Open
+  openBtn.addEventListener('click', ()=>{
+    // Refresh fields from stored auth
+    const auth = loadAuth();
+    const user = (auth && auth.user) || {};
+    const name = user.name || '';
+    document.getElementById('profileName').value  = name;
+    document.getElementById('profileEmail').value = user.email || '';
+    document.getElementById('modalName').textContent  = name || '—';
+    document.getElementById('modalEmail').textContent = user.email || '—';
+    document.getElementById('modalAvatar').textContent = (name.charAt(0) || 'U').toUpperCase();
+    // Clear status fields
+    document.getElementById('profileStatus').innerHTML  = '';
+    document.getElementById('passwordStatus').innerHTML = '';
+    document.getElementById('profileCurrentPw').value   = '';
+    document.getElementById('pwCurrentPw').value        = '';
+    document.getElementById('pwNewPw').value            = '';
+    document.getElementById('pwConfirmPw').value        = '';
+    modal.classList.add('open');
+  });
+
+  // Close
+  closeBtn.addEventListener('click', ()=> modal.classList.remove('open'));
+  modal.addEventListener('click', e=>{ if(e.target===modal) modal.classList.remove('open'); });
+
+  // Modal tab switcher
+  document.querySelectorAll('.modal-tab').forEach(tab=>{
+    tab.addEventListener('click', ()=>{
+      document.querySelectorAll('.modal-tab').forEach(t=>t.classList.remove('active'));
+      document.querySelectorAll('.modal-section').forEach(s=>s.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById(tab.dataset.section).classList.add('active');
+    });
+  });
+
+  // ── Save profile (name + email) ──
+  document.getElementById('saveProfileBtn').addEventListener('click', async ()=>{
+    const statusEl  = document.getElementById('profileStatus');
+    const name      = document.getElementById('profileName').value.trim();
+    const email     = document.getElementById('profileEmail').value.trim();
+    const currentPw = document.getElementById('profileCurrentPw').value;
+
+    if(!name){
+      statusBox(statusEl, 'error', 'Name cannot be empty.'); return;
+    }
+    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+      statusBox(statusEl, 'error', 'Please enter a valid email.'); return;
+    }
+    if(!currentPw){
+      statusBox(statusEl, 'warn', 'Enter your current password to save changes.'); return;
+    }
+
+    statusBox(statusEl, 'info', '<span class="spinner"></span> Saving…');
+
+    try{
+      const res = await authedFetch('/auth/update-profile', {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ name, email, current_password: currentPw })
+      });
+      if(!res.ok){
+        let detail = 'Update failed.';
+        try{ const err = await res.json(); detail = err.detail || detail; }catch(_){}
+        statusBox(statusEl, 'error', escapeHtml(detail)); return;
+      }
+      const data = await res.json();
+      // Update stored auth with new token + user
+      const prev = loadAuth();
+      const persist = !!localStorage.getItem('dab_auth');
+      setAuth({ token: data.token, user: data.user }, persist);
+      // Refresh sidebar labels
+      document.getElementById('userNameLabel').textContent   = data.user.name;
+      document.getElementById('userEmailLabel').textContent  = data.user.email;
+      document.getElementById('userAvatar').textContent      = data.user.name.charAt(0).toUpperCase();
+      document.getElementById('modalAvatar').textContent     = data.user.name.charAt(0).toUpperCase();
+      document.getElementById('modalName').textContent       = data.user.name;
+      document.getElementById('modalEmail').textContent      = data.user.email;
+      document.getElementById('profileCurrentPw').value      = '';
+      statusBox(statusEl, 'success', '✅ Profile updated successfully.');
+    }catch(e){
+      statusBox(statusEl, 'error', '❌ ' + e.message);
+    }
+  });
+
+  // ── Change password ──
+  document.getElementById('savePasswordBtn').addEventListener('click', async ()=>{
+    const statusEl  = document.getElementById('passwordStatus');
+    const currentPw = document.getElementById('pwCurrentPw').value;
+    const newPw     = document.getElementById('pwNewPw').value;
+    const confirmPw = document.getElementById('pwConfirmPw').value;
+
+    if(!currentPw){ statusBox(statusEl, 'error', 'Enter your current password.'); return; }
+    if(newPw.length < 8){ statusBox(statusEl, 'error', 'New password must be at least 8 characters.'); return; }
+    if(newPw !== confirmPw){ statusBox(statusEl, 'error', 'New passwords do not match.'); return; }
+
+    statusBox(statusEl, 'info', '<span class="spinner"></span> Updating password…');
+
+    try{
+      // Re-use update-profile endpoint with new_password field
+      const auth  = loadAuth();
+      const user  = (auth && auth.user) || {};
+      const res   = await authedFetch('/auth/update-profile', {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          name:             user.name  || '',
+          email:            user.email || '',
+          current_password: currentPw,
+          new_password:     newPw,
+        })
+      });
+      if(!res.ok){
+        let detail = 'Password update failed.';
+        try{ const err = await res.json(); detail = err.detail || detail; }catch(_){}
+        statusBox(statusEl, 'error', escapeHtml(detail)); return;
+      }
+      const data    = await res.json();
+      const persist = !!localStorage.getItem('dab_auth');
+      setAuth({ token: data.token, user: data.user }, persist);
+      document.getElementById('pwCurrentPw').value = '';
+      document.getElementById('pwNewPw').value     = '';
+      document.getElementById('pwConfirmPw').value = '';
+      statusBox(statusEl, 'success', '✅ Password updated successfully.');
+    }catch(e){
+      statusBox(statusEl, 'error', '❌ ' + e.message);
+    }
+  });
+}
+
+/* ============================================================
+   RATE LIMIT HANDLER — show banner on 429 responses
+============================================================ */
+function handleRateLimit(tabId){
+  const warnEl = document.getElementById(tabId + 'RateWarn');
+  if(warnEl){
+    warnEl.classList.add('visible');
+    setTimeout(()=> warnEl.classList.remove('visible'), 60000);
+  }
 }
