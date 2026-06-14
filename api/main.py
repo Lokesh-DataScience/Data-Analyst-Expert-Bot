@@ -1,8 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()
+
 import json
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, Depends
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -20,19 +21,47 @@ import hashlib
 import pandas as pd
 from api.utils.data_analyzer import DataAnalyzer
 from api.utils.data_augmentor import DataAugmentor
-from api.auth import get_current_user, get_current_user_optional
-from api.auth import router as auth_router
-# Set up cache directory
-cache = Cache(directory="./.cache")
-# Store chat histories per session3
+from api.auth import (
+    auth_router,
+    get_current_user,
+    get_current_user_optional,
+    get_rate_limit_key,
+)
+
+# ============================================================
+# RATE LIMITING (slowapi)
+# pip install slowapi
+# ============================================================
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_rate_limit_key, default_limits=["200/minute"])
+
+# ============================================================
+# CACHE & CHAT STORE
+# ============================================================
+cache      = Cache(directory="./.cache")
 chat_store = cache.get("chat_store", {})
 
-# Util: Create stable hash key
+
 def hash_data(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
-app = FastAPI()
-app.include_router(auth_router)
+
+def user_session_key(email: str, session_id: str) -> str:
+    """Scope every chat session to the authenticated user."""
+    return f"{email}:{session_id}"
+
+
+# ============================================================
+# APP
+# ============================================================
+app = FastAPI(title="DataAnalystBot API", version="2.0.0")
+
+# Rate limiter must be set on app state before adding exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,754 +71,599 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-LOADER = DocumentLoader()
+app.include_router(auth_router)
 
-# Input schemas
+LOADER    = DocumentLoader()
+rag_chain = build_chain()
+
+# ============================================================
+# INPUT SCHEMAS
+# ============================================================
 class QueryRequest(BaseModel):
-    question: str
+    question:    str
     chat_history: Optional[List[Dict]] = None
-    session_id: Optional[str] = None
+    session_id:  Optional[str]         = None
+
 
 class DataAnalysisRequest(BaseModel):
-    csv_base64: str
+    csv_base64:  str
     csv_filename: str
-    session_id: Optional[str] = None
+    session_id:  Optional[str] = None
+
 
 class MultiUploadQueryRequest(BaseModel):
-    question: str
-    session_id: Optional[str] = None
+    question:     str
+    session_id:   Optional[str] = None
     chat_history: Optional[List[Dict]] = None
     image_base64: Optional[str] = None
-    image_type: Optional[str] = None
-    csv_base64: Optional[str] = None
+    image_type:   Optional[str] = None
+    csv_base64:   Optional[str] = None
     csv_filename: Optional[str] = None
-    pdf_base64: Optional[str] = None
+    pdf_base64:   Optional[str] = None
     pdf_filename: Optional[str] = None
+
 
 class SQLGenerationRequest(BaseModel):
     description: str
-    db_schema: Optional[str] = None
-    db_type: Optional[str] = "PostgreSQL"
-    query_type: Optional[str] = None
-    session_id: Optional[str] = None
+    db_schema:   Optional[str] = None
+    db_type:     Optional[str] = "PostgreSQL"
+    query_type:  Optional[str] = None
+    session_id:  Optional[str] = None
+
 
 class DataAugmentationRequest(BaseModel):
-    csv_base64: str
-    csv_filename: str
-    session_id: Optional[str] = None
-    apply_imputation: bool = True
+    csv_base64:              str
+    csv_filename:            str
+    session_id:              Optional[str] = None
+    apply_imputation:        bool = True
     apply_outlier_treatment: bool = True
-    apply_synthetic_rows: bool = False  # Off by default — user must opt in
-    apply_deduplication: bool = True
-    apply_transformations: bool = False  # Log/Box-Cox — opt in
+    apply_synthetic_rows:    bool = False
+    apply_deduplication:     bool = True
+    apply_transformations:   bool = False
 
-def update_memory_and_history(memory, chat_history, session_id: str):
-    session_key = session_id or "default"
+
+# ============================================================
+# MEMORY / HISTORY HELPERS
+# ============================================================
+def update_memory_and_history(memory, chat_history, session_key: str) -> str:
     memory.messages.clear()
-
-    # Initialize or fetch session history
     existing_history = chat_store.get(session_key, [])
-    updated_history = []
+    updated_history  = []
 
     for msg in chat_history or []:
-        # Update memory (langchain) messages
         if msg["type"] == "human":
             memory.add_message(HumanMessage(content=msg["content"]))
         elif msg["type"] == "ai":
             memory.add_message(AIMessage(content=msg["content"]))
-
-        # Track file info if provided
-        entry = {
-            "type": msg["type"],
-            "content": msg["content"],
-        }
+        entry = {"type": msg["type"], "content": msg["content"]}
         if "file" in msg:
             entry["file"] = msg["file"]
         updated_history.append(entry)
 
-    # Persist updated chat history
     chat_store[session_key] = existing_history + updated_history
-    cache["chat_store"] = chat_store
+    cache["chat_store"]     = chat_store
 
-    # Langchain-style formatted string
-    chat_history_str = "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
-    return chat_history_str
+    return "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
 
-def user_session_key(user_email: str, session_id: str) -> str:
-    return f"{user_email}:{session_id}"
 
-# Initialize retrieval chain once
-rag_chain = build_chain()
-
-@app.post("/chat")
-def chat_endpoint(request: QueryRequest, current_user: dict = Depends(get_current_user_optional)):
-    email = (current_user or {}).get("email", "anonymous")
-    session_key = user_session_key(email, request.session_id or "default")
-    memory = get_memory(session_key)
-
-    # Update memory + store human message
-    chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
-    
-    # Invoke model
-    response = rag_chain.invoke({
-        "input": request.question,
-        "chat_history": chat_history_str
-    })
-    
-    # Append AI response to history
-    chat_store.setdefault(session_key, [])
-    chat_store[session_key].append({
-        "type": "ai",
-        "content": response.get("answer", "No response")
-    })
-    cache["chat_store"] = chat_store
-    return {"response": response.get("answer", "No response")}
-
+# ============================================================
+# CONTEXT HELPERS
+# ============================================================
 def get_image_context(image_base64: str, image_type: str) -> str:
-    """Get image context with caching"""
-    image_key = hash_data(image_base64)
-    if image_key in cache:
-        return cache[image_key]
-    
+    key = hash_data(image_base64)
+    if key in cache:
+        return cache[key]
     client = Groq()
-    model = "meta-llama/llama-4-maverick-17b-128e-instruct"
-    messages = [
-        {
-            "role": "user",
+    resp   = client.chat.completions.create(
+        model    = "meta-llama/llama-4-maverick-17b-128e-instruct",
+        messages = [{
+            "role":    "user",
             "content": [
                 {"type": "text", "text": "Describe this image for data analysis:"},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{image_type};base64,{image_base64}",
-                    },
-                },
+                {"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{image_base64}"}},
             ],
-        }
-    ]
-    chat_completion = client.chat.completions.create(
-        messages=messages,
-        model=model
+        }],
     )
-    image_context = chat_completion.choices[0].message.content
-    cache[image_key] = image_context
-    return image_context
+    result       = resp.choices[0].message.content
+    cache[key]   = result
+    return result
+
 
 def get_csv_context(csv_base64: str, question: str = "") -> str:
-    """Get CSV context with caching"""
-    csv_key = hash_data(csv_base64 + question)
-    if csv_key in cache:
-        return cache[csv_key]
-    
+    """
+    Returns a compact pandas summary instead of a raw row-dump,
+    keeping token usage low while giving the LLM full context.
+    """
+    key = hash_data(csv_base64 + question)
+    if key in cache:
+        return cache[key]
+
     csv_bytes = base64.b64decode(csv_base64)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
-        tmp_csv.write(csv_bytes)
-        tmp_csv_path = tmp_csv.name
-    
-    try:
-        csv_docs = LOADER.load_csv(tmp_csv_path)
-        csv_context = "\n".join([doc.page_content for doc in csv_docs])
-        cache[csv_key] = csv_context
-        return csv_context
-    finally:
-        os.unlink(tmp_csv_path)
+    df        = pd.read_csv(__import__("io").BytesIO(csv_bytes))
+
+    context = (
+        f"Shape: {df.shape[0]} rows × {df.shape[1]} columns\n"
+        f"Columns: {list(df.columns)}\n"
+        f"Data types:\n{df.dtypes.to_string()}\n\n"
+        f"First 10 rows:\n{df.head(10).to_string()}\n\n"
+        f"Summary statistics:\n{df.describe(include='all').to_string()}"
+    )
+    cache[key] = context
+    return context
+
 
 def get_pdf_context(pdf_base64: str, question: str = "") -> str:
-    """Get PDF context with caching"""
-    pdf_key = hash_data(pdf_base64 + question)
-    if pdf_key in cache:
-        return cache[pdf_key]
-    
+    key = hash_data(pdf_base64 + question)
+    if key in cache:
+        return cache[key]
     pdf_bytes = base64.b64decode(pdf_base64)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-        tmp_pdf.write(pdf_bytes)
-        tmp_pdf_path = tmp_pdf.name
-    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
     try:
-        pdf_docs = LOADER.load_pdf(tmp_pdf_path)
-        pdf_context = "\n".join([doc.page_content for doc in pdf_docs])
-        cache[pdf_key] = pdf_context
-        return pdf_context
+        docs     = LOADER.load_pdf(tmp_path)
+        result   = "\n".join([d.page_content for d in docs])
+        cache[key] = result
+        return result
     finally:
-        os.unlink(tmp_pdf_path)
+        os.unlink(tmp_path)
 
-@app.post("/multi-upload")
-def multi_upload_endpoint(request: MultiUploadQueryRequest, current_user: dict = Depends(get_current_user_optional)):
-    """
-    Accepts any combination of image, CSV, and PDF, and provides a context-aware answer.
-    """
-    email = (current_user or {}).get("email", "anonymous")
-    session_key = user_session_key(email, request.session_id or "default")
-    memory = get_memory(session_key)
-    chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
-    # Gather contexts
-    contexts = []
 
-    if request.image_base64 and request.image_type:
-        contexts.append(f"Image context: {get_image_context(request.image_base64, request.image_type)}")
-    if request.csv_base64 and request.csv_filename:
-        contexts.append(f"CSV context: {get_csv_context(request.csv_base64, request.question or '')}")
-    if request.pdf_base64 and request.pdf_filename:
-        contexts.append(f"PDF context: {get_pdf_context(request.pdf_base64, request.question or '')}")
+# ============================================================
+# SERIALIZATION HELPERS
+# ============================================================
+PLOTLY_BOOL_PROPS = {
+    "showarrow","automargin","showlegend","matches","visible","autosize",
+    "showticklabels","showgrid","zeroline","showline","mirror","ticks",
+    "showspikes","showaxeslabels","fixedrange","constraintoward",
+    "connectgaps","fill","showscale","reversescale","autocolorscale",
+    "showcolorbar","transpose","zauto","ncontours","autocontour",
+    "autobinx","autobiny","standoff","clicktoshow","captureevents",
+    "autorange","outlinewidth","borderwidth","thickness","len",
+    "fillcolor","opacity",
+}
 
-    # Combine all contexts
-    combined_context = "\n\n".join(contexts) if contexts else None
 
-    # Use the contextual chain if any context is present, else fallback to rag_chain
-    if combined_context:
-        contextual_chain = build_contextual_chain()
-        response = contextual_chain.invoke({
-            "input": request.question,
-            "chat_history": chat_history_str,
-            "context": combined_context
-        })
-        answer = response.content if hasattr(response, "content") else str(response)
-    else:
-        response = rag_chain.invoke({
-            "input": request.question,
-            "chat_history": chat_history_str
-        })
-        answer = response.get("answer", "No response")
+def fix_plotly_bools(obj, parent_key=None):
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k in PLOTLY_BOOL_PROPS and isinstance(v, int):
+                out[k] = bool(v)
+            elif k in PLOTLY_BOOL_PROPS and isinstance(v, str):
+                out[k] = v.lower() in ("true", "1")
+            else:
+                out[k] = fix_plotly_bools(v, k)
+        return out
+    if isinstance(obj, list):
+        return [fix_plotly_bools(i, parent_key) for i in obj]
+    if parent_key in PLOTLY_BOOL_PROPS and isinstance(obj, int):
+        return bool(obj)
+    return obj
 
-    # Append AI response to history
+
+def clean_dict_for_json(obj):
+    if isinstance(obj, dict):
+        return {
+            k: (bool(cv) if k in PLOTLY_BOOL_PROPS and isinstance(cv := clean_dict_for_json(v), int) else clean_dict_for_json(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [clean_dict_for_json(i) for i in obj]
+    if isinstance(obj, np.ndarray):
+        return clean_dict_for_json(obj.tolist())
+    if isinstance(obj, (int, float)):
+        try:
+            return None if (pd.isna(obj) or not np.isfinite(obj)) else obj
+        except Exception:
+            return obj
+    return obj
+
+
+def convert_to_serializable(obj):
+    if isinstance(obj, dict):
+        return {str(k): convert_to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_to_serializable(v) for v in obj]
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        try:
+            return None if (pd.isna(obj) or not np.isfinite(obj)) else float(obj)
+        except Exception:
+            return float(obj)
+    if isinstance(obj, (np.ndarray, pd.Series)):
+        return convert_to_serializable(obj.tolist())
+    if isinstance(obj, pd.DataFrame):
+        return convert_to_serializable(obj.to_dict("records"))
+    if isinstance(obj, (pd.Timestamp, pd.Timedelta)):
+        return str(obj)
+    return obj
+
+
+def clean_for_json(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.replace([np.inf, -np.inf], np.nan)
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    df[num_cols] = df[num_cols].apply(
+        lambda col: col.fillna(col.median()) if col.dtype in [np.float64, np.int64] else col
+    )
+    return df
+
+
+# ============================================================
+# CHAT
+# ============================================================
+@app.post("/chat")
+@limiter.limit("30/minute")
+def chat_endpoint(
+    request:      Request,
+    body:         QueryRequest,
+    current_user: dict = Depends(get_current_user_optional),
+):
+    email       = (current_user or {}).get("email", "anonymous")
+    session_key = user_session_key(email, body.session_id or "default")
+    memory      = get_memory(session_key)
+    history_str = update_memory_and_history(memory, body.chat_history, session_key)
+
+    response = rag_chain.invoke({"input": body.question, "chat_history": history_str})
+    answer   = response.get("answer", "No response")
+
     chat_store.setdefault(session_key, [])
-    chat_store[session_key].append({
-        "type": "ai",
-        "content": answer
-    })
+    chat_store[session_key].append({"type": "ai", "content": answer})
     cache["chat_store"] = chat_store
-
     return {"response": answer}
 
+
+# ============================================================
+# MULTI-UPLOAD  (rate-limited: 20/minute per user)
+# ============================================================
+@app.post("/multi-upload")
+@limiter.limit("20/minute")
+def multi_upload_endpoint(
+    request:      Request,
+    body:         MultiUploadQueryRequest,
+    current_user: dict = Depends(get_current_user_optional),
+):
+    email       = (current_user or {}).get("email", "anonymous")
+    session_key = user_session_key(email, body.session_id or "default")
+    memory      = get_memory(session_key)
+    history_str = update_memory_and_history(memory, body.chat_history, session_key)
+
+    contexts = []
+    if body.image_base64 and body.image_type:
+        contexts.append(f"Image context: {get_image_context(body.image_base64, body.image_type)}")
+    if body.csv_base64 and body.csv_filename:
+        contexts.append(f"CSV context: {get_csv_context(body.csv_base64, body.question or '')}")
+    if body.pdf_base64 and body.pdf_filename:
+        contexts.append(f"PDF context: {get_pdf_context(body.pdf_base64, body.question or '')}")
+
+    combined = "\n\n".join(contexts) if contexts else None
+
+    if combined:
+        chain    = build_contextual_chain()
+        response = chain.invoke({"input": body.question, "chat_history": history_str, "context": combined})
+        answer   = response.content if hasattr(response, "content") else str(response)
+    else:
+        response = rag_chain.invoke({"input": body.question, "chat_history": history_str})
+        answer   = response.get("answer", "No response")
+
+    chat_store.setdefault(session_key, [])
+    chat_store[session_key].append({"type": "ai", "content": answer})
+    cache["chat_store"] = chat_store
+    return {"response": answer}
+
+
+# ============================================================
+# RECENT CHATS  (scoped per user)
+# ============================================================
 @app.get("/recent-chats/{session_id}")
 def get_recent_chats(
-    session_id: str,
-    current_user: dict = Depends(get_current_user_optional)
+    session_id:   str,
+    current_user: dict = Depends(get_current_user_optional),
 ):
     email = (current_user or {}).get("email", "anonymous")
-    key = user_session_key(email, session_id)
+    key   = user_session_key(email, session_id)
     return {"chat_history": chat_store.get(key, [])}
+
 
 @app.get("/recent-chat-titles")
 def get_recent_chat_titles(
-    current_user: dict = Depends(get_current_user_optional)
+    current_user: dict = Depends(get_current_user_optional),
 ):
-    email = (current_user or {}).get("email", "anonymous")
+    email  = (current_user or {}).get("email", "anonymous")
     prefix = f"{email}:"
     titles = []
     for key, history in chat_store.items():
-        if not key.startswith(prefix):   # ← only this user's sessions
+        if not key.startswith(prefix):
             continue
-        session_id = key[len(prefix):]   # strip the email: prefix
+        session_id = key[len(prefix):]
         for msg in history:
             if msg["type"] == "human":
-                titles.append({
-                    "session_id": session_id,
-                    "title": msg["content"]
-                })
+                titles.append({"session_id": session_id, "title": msg["content"]})
                 break
     return {"sessions": titles}
 
+
 @app.post("/save-chat")
 def save_chat_endpoint(
-    data: dict,
-    current_user: dict = Depends(get_current_user_optional)
+    data:         dict,
+    current_user: dict = Depends(get_current_user_optional),
 ):
-    email = (current_user or {}).get("email", "anonymous")
+    email      = (current_user or {}).get("email", "anonymous")
     session_id = data.get("session_id")
-    chat_history = data.get("chat_history", [])
-    if session_id and chat_history:
-        key = user_session_key(email, session_id)
-        chat_store[key] = chat_history
-        cache["chat_store"] = chat_store
+    history    = data.get("chat_history", [])
+    if session_id and history:
+        key                  = user_session_key(email, session_id)
+        chat_store[key]      = history
+        cache["chat_store"]  = chat_store
         return {"success": True}
     return {"success": False, "error": "Missing session_id or chat_history"}
 
-# Plotly boolean properties for fixing serialization issues
-PLOTLY_BOOL_PROPS = {
-    "showarrow", "automargin", "showlegend", "matches", "visible", "autosize",
-    "showticklabels", "showgrid", "zeroline", "showline", "mirror", "ticks",
-    "showspikes", "showaxeslabels", "fixedrange", "constraintoward",
-    "connectgaps", "fill", "showscale", "reversescale", "autocolorscale",
-    "showcolorbar", "transpose", "zauto", "ncontours", "autocontour",
-    "autobinx", "autobiny", "standoff", "clicktoshow", "captureevents",
-    "autorange", "outlinewidth", "borderwidth", "thickness", "len",
-    "fillcolor", "opacity"
-}
 
-def fix_plotly_bools(obj, parent_key=None):
-    """Recursively fix boolean properties in Plotly figure dictionaries"""
-    if isinstance(obj, dict):
-        fixed_dict = {}
-        for key, value in obj.items():
-            if key in PLOTLY_BOOL_PROPS:
-                if isinstance(value, int):
-                    fixed_dict[key] = bool(value)
-                elif isinstance(value, str):
-                    if value.lower() in ['true', '1']:
-                        fixed_dict[key] = True
-                    elif value.lower() in ['false', '0']:
-                        fixed_dict[key] = False
-                    else:
-                        fixed_dict[key] = value
-                else:
-                    fixed_dict[key] = value
-            else:
-                fixed_dict[key] = fix_plotly_bools(value, key)
-        return fixed_dict
-    elif isinstance(obj, list):
-        return [fix_plotly_bools(item, parent_key) for item in obj]
-    else:
-        if parent_key in PLOTLY_BOOL_PROPS and isinstance(obj, int):
-            return bool(obj)
-        return obj
-
-def clean_dict_for_json(obj):
-    """Clean dictionary for JSON serialization with enhanced boolean handling"""
-    if isinstance(obj, dict):
-        cleaned = {}
-        for k, v in obj.items():
-            cleaned_v = clean_dict_for_json(v)
-            if k in PLOTLY_BOOL_PROPS and isinstance(cleaned_v, int):
-                cleaned[k] = bool(cleaned_v)
-            else:
-                cleaned[k] = cleaned_v
-        return cleaned
-    elif isinstance(obj, list):
-        return [clean_dict_for_json(item) for item in obj]
-    elif isinstance(obj, np.ndarray):
-        return clean_dict_for_json(obj.tolist())
-    elif isinstance(obj, (int, float)):
-        if pd.isna(obj) or not np.isfinite(obj):
-            return None
-        return obj
-    else:
-        return obj
-
-def convert_to_serializable(obj):
-    """Recursively convert object to JSON-serializable types"""
-    if isinstance(obj, dict):
-        return {str(k): convert_to_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_to_serializable(v) for v in obj]
-    elif isinstance(obj, (np.integer, int)):
-        return int(obj)
-    elif isinstance(obj, (np.floating, float)):
-        if pd.isna(obj) or not np.isfinite(obj):
-            return None
-        return float(obj)
-    elif isinstance(obj, (np.ndarray, pd.Series)):
-        return convert_to_serializable(obj.tolist())
-    elif isinstance(obj, pd.DataFrame):
-        return convert_to_serializable(obj.to_dict('records'))
-    elif isinstance(obj, (pd.Timestamp, pd.Timedelta)):
-        return str(obj)
-    else:
-        return obj
-
-def clean_for_json(dataframe):
-    """Clean DataFrame to ensure JSON serialization compatibility"""
-    dataframe = dataframe.replace([np.inf, -np.inf], np.nan)
-    numeric_columns = dataframe.select_dtypes(include=[np.number]).columns
-    dataframe[numeric_columns] = dataframe[numeric_columns].apply(
-        lambda col: col.fillna(col.median()) if col.dtype in [np.float64, np.int64] else col
-    )
-    return dataframe
-
+# ============================================================
+# ANALYZE DATA  (rate-limited: 20/minute per user)
+# ============================================================
 @app.post("/analyze-data")
-def analyze_data_endpoint(request: DataAnalysisRequest, current_user: dict = Depends(get_current_user_optional)):
-    """
-    Comprehensive data analysis endpoint that performs:
-    - Data cleaning and preprocessing
-    - Statistical analysis
-    - AI-powered insights generation
-    - Interactive visualizations
-    """
+@limiter.limit("20/minute")
+def analyze_data_endpoint(
+    request: Request,
+    body:    DataAnalysisRequest,
+    _:       dict = Depends(get_current_user_optional),
+):
     try:
-        # Decode the CSV data
-        csv_bytes = base64.b64decode(request.csv_base64)
-        
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
-            tmp_csv.write(csv_bytes)
-            tmp_csv_path = tmp_csv.name
-        
-        try:
-            # Load the CSV into a pandas DataFrame
-            df = pd.read_csv(tmp_csv_path)
-            
-            # Initialize the DataAnalyzer
-            analyzer = DataAnalyzer()
-            
-            # Perform deep data cleaning
-            cleaned_df, cleaning_log = analyzer.deep_clean_data(df)
-            cleaned_df = clean_for_json(cleaned_df)
-            
-            # Generate AI-powered insights
-            insights = analyzer.generate_insights(cleaned_df, cleaning_log)
-            
-            # Perform statistical analysis
-            statistical_summary = analyzer.statistical_analysis(cleaned_df)
-            
-            # Clean statistical summary
-            if isinstance(statistical_summary, dict):
-                statistical_summary = {
-                    k: (v if isinstance(v, (int, float)) and pd.notna(v) and np.isfinite(v) else None) 
-                    for k, v in statistical_summary.items()
-                }
-            
-            # Create visualizations
-            plots = analyzer.create_visualizations(cleaned_df)
-            
-            # Convert plots to JSON for frontend
-            plots_json = {}
-            for plot_name, fig in plots.items():
-                try:
-                    fig_dict = fig.to_dict()
-                    cleaned_fig_dict = clean_dict_for_json(fig_dict)
-                    fixed_fig_dict = fix_plotly_bools(cleaned_fig_dict)
-                    plots_json[plot_name] = fixed_fig_dict
-                except Exception as plot_error:
-                    plots_json[plot_name] = {"error": f"Could not generate plot: {str(plot_error)}"}
-
-            # Prepare response data
-            response_data = {
-                "success": True,
-                "original_shape": df.shape,
-                "cleaned_shape": cleaned_df.shape,
-                "cleaning_log": convert_to_serializable(cleaning_log),
-                "insights": convert_to_serializable(insights),
-                "statistical_summary": convert_to_serializable(statistical_summary),
-                "visualizations": plots_json,
-                "column_info": convert_to_serializable({
-                    "original_columns": list(df.columns),
-                    "cleaned_columns": list(cleaned_df.columns),
-                    "data_types": cleaned_df.dtypes.astype(str).to_dict(),
-                    "missing_values": cleaned_df.isnull().sum().to_dict(),
-                    "unique_counts": cleaned_df.nunique().to_dict()
-                }),
-                "sample_data": {
-                    "original": convert_to_serializable(df.head()),
-                    "cleaned": convert_to_serializable(cleaned_df.head())
-                }
-            }
-            
-            return JSONResponse(content=response_data)
-            
-        finally:
-            os.unlink(tmp_csv_path)
-            
-    except Exception as e:
-        error_message = str(e)
-        
-        # Handle specific error types
-        if "API quota" in error_message or "429" in error_message:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "success": False,
-                    "error": "API quota exceeded",
-                    "message": "The AI insights feature has reached its usage limit. Please try again later or check your API quota.",
-                    "error_type": "quota_exceeded"
-                }
-            )
-        elif "pandas" in error_message.lower() or "csv" in error_message.lower():
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "error": "Invalid CSV file",
-                    "message": "The uploaded file could not be processed as a valid CSV. Please check the file format.",
-                    "error_type": "invalid_csv"
-                }
-            )
-        elif "JSON compliant" in error_message or "out of range" in error_message.lower():
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "error": "Data serialization error",
-                    "message": "The data contains values that cannot be converted to JSON. This usually indicates infinite or extremely large numbers in your dataset.",
-                    "error_type": "serialization_error"
-                }
-            )
-        else:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "error": "Analysis failed",
-                    "message": f"An error occurred during data analysis: {error_message}",
-                    "error_type": "analysis_error"
-                }
-            )
-
-@app.post("/clean-data")
-def clean_data_endpoint(request: DataAnalysisRequest):
-    """
-    Simplified data cleaning endpoint that only performs data preprocessing
-    without AI insights (useful when API quota is exceeded)
-    """
-    try:
-        csv_bytes = base64.b64decode(request.csv_base64)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
-            tmp_csv.write(csv_bytes)
-            tmp_csv_path = tmp_csv.name
-        
-        try:
-            df = pd.read_csv(tmp_csv_path)
-            analyzer = DataAnalyzer()
-            
-            # Perform deep data cleaning
-            cleaned_df, cleaning_log = analyzer.deep_clean_data(df)
-            
-            # Perform statistical analysis
-            statistical_summary = analyzer.statistical_analysis(cleaned_df)
-            
-            # Create basic visualizations
-            plots = analyzer.create_visualizations(cleaned_df)
-            
-            # Convert plots to JSON for frontend
-            plots_json = {}
-            for plot_name, fig in plots.items():
-                try:
-                    fig_dict = fig.to_dict()
-                    cleaned_fig_dict = fix_plotly_bools(fig_dict)
-                    plots_json[plot_name] = cleaned_fig_dict
-                except Exception as plot_error:
-                    plots_json[plot_name] = {"error": f"Could not generate plot: {str(plot_error)}"}            
-            
-            response_data = {
-                "success": True,
-                "original_shape": df.shape,
-                "cleaned_shape": cleaned_df.shape,
-                "cleaning_log": cleaning_log,
-                "statistical_summary": statistical_summary,
-                "visualizations": plots_json,
-                "column_info": {
-                    "original_columns": list(df.columns),
-                    "cleaned_columns": list(cleaned_df.columns),
-                    "data_types": cleaned_df.dtypes.astype(str).to_dict(),
-                    "missing_values": cleaned_df.isnull().sum().to_dict(),
-                    "unique_counts": cleaned_df.nunique().to_dict()
-                },
-                "sample_data": {
-                    "original": df.head().to_dict('records'),
-                    "cleaned": cleaned_df.head().to_dict('records')
-                }
-            }
-            
-            return JSONResponse(content=response_data)
-            
-        finally:
-            os.unlink(tmp_csv_path)
-            
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": "Data cleaning failed",
-                "message": f"An error occurred during data cleaning: {str(e)}",
-                "error_type": "cleaning_error"
-            }
-        )
-
-@app.post("/generate-sql")
-def generate_sql_endpoint(request: SQLGenerationRequest, current_user: dict = Depends(get_current_user_optional)):
-    """
-    SQL query generation endpoint that:
-    - Accepts a natural language description
-    - Optionally uses provided schema or auto-detects from context
-    - Returns a generated SQL query, explanation, and optimization suggestions
-    """
-    email = (current_user or {}).get("email", "anonymous")
-    try:
-        # Build a structured prompt for the SQL generation
-        schema_section = f"\n\nDatabase Schema:\n{request.db_schema}" if request.db_schema else ""
-        query_type_section = f"\nQuery Type: {request.query_type}" if request.query_type else ""
-
-        prompt = f"""You are an expert SQL developer. Generate a SQL query based on the following:
-
-                    Database Type: {request.db_type}{query_type_section}{schema_section}
-
-                    User Request: {request.description}
-
-                    Respond ONLY in the following JSON format (no markdown, no extra text):
-                    {{
-                    "sql_query": "<the SQL query>",
-                    "explanation": "<plain English explanation of what the query does and why>",
-                    "suggestions": "<performance tips, index recommendations, or alternative approaches>"
-                    }}"""
-
-        client = Groq()
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert SQL developer. Always respond with valid JSON only."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            temperature=0.1  # Low temperature for deterministic SQL output
-        )
-
-        raw_response = chat_completion.choices[0].message.content.strip()
-
-        # Strip markdown code fences if present
-        if raw_response.startswith("```"):
-            raw_response = raw_response.split("```")[1]
-            if raw_response.startswith("json"):
-                raw_response = raw_response[4:]
-            raw_response = raw_response.strip()
-
-        # Parse the JSON response
-        try:
-            result = json.loads(raw_response)
-        except json.JSONDecodeError:
-            # Fallback: return raw output as the query if JSON parsing fails
-            result = {
-                "sql_query": raw_response,
-                "explanation": "Could not parse structured response. Raw output returned.",
-                "suggestions": ""
-            }
-
-        # Optionally store in session history
-        if request.session_id:
-            session_key = user_session_key(email, request.session_id) if request.session_id else None
-            chat_store.setdefault(session_key, [])
-            chat_store[session_key].append({
-                "type": "human",
-                "content": f"[SQL Generator] {request.description}"
-            })
-            chat_store[session_key].append({
-                "type": "ai",
-                "content": result.get("sql_query", "")
-            })
-            cache["chat_store"] = chat_store
-
-        return JSONResponse(content={
-            "success": True,
-            "sql_query": result.get("sql_query", ""),
-            "explanation": result.get("explanation", ""),
-            "suggestions": result.get("suggestions", ""),
-            "db_type": request.db_type,
-            "query_type": request.query_type
-        })
-
-    except Exception as e:
-        error_message = str(e)
-
-        if "API quota" in error_message or "429" in error_message:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "success": False,
-                    "error": "API quota exceeded",
-                    "message": "The SQL generation feature has reached its usage limit. Please try again later.",
-                    "error_type": "quota_exceeded"
-                }
-            )
-        elif "json" in error_message.lower():
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "error": "Response parsing error",
-                    "message": "The AI returned an unexpected format. Please try rephrasing your request.",
-                    "error_type": "parse_error"
-                }
-            )
-        else:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "error": "SQL generation failed",
-                    "message": f"An error occurred during SQL generation: {error_message}",
-                    "error_type": "generation_error"
-                }
-            )
-
-@app.post("/diagnose-data")
-def diagnose_data_endpoint(request: DataAugmentationRequest):
-    """
-    Stage 1: Scan the CSV and return an augmentation plan without modifying data.
-    """
-    try:
-        csv_bytes = base64.b64decode(request.csv_base64)
+        csv_bytes = base64.b64decode(body.csv_base64)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
             tmp.write(csv_bytes)
             tmp_path = tmp.name
+        try:
+            df       = pd.read_csv(tmp_path)
+            analyzer = DataAnalyzer()
+
+            cleaned_df, cleaning_log = analyzer.deep_clean_data(df)
+            cleaned_df               = clean_for_json(cleaned_df)
+            insights                 = analyzer.generate_insights(cleaned_df, cleaning_log)
+            statistical_summary      = analyzer.statistical_analysis(cleaned_df)
+
+            if isinstance(statistical_summary, dict):
+                statistical_summary = {
+                    k: (v if isinstance(v, (int, float)) and pd.notna(v) and np.isfinite(v) else None)
+                    for k, v in statistical_summary.items()
+                }
+
+            plots      = analyzer.create_visualizations(cleaned_df)
+            plots_json = {}
+            for name, fig in plots.items():
+                try:
+                    plots_json[name] = fix_plotly_bools(clean_dict_for_json(fig.to_dict()))
+                except Exception as pe:
+                    plots_json[name] = {"error": str(pe)}
+
+            return JSONResponse(content={
+                "success":              True,
+                "original_shape":       df.shape,
+                "cleaned_shape":        cleaned_df.shape,
+                "cleaning_log":         convert_to_serializable(cleaning_log),
+                "insights":             convert_to_serializable(insights),
+                "statistical_summary":  convert_to_serializable(statistical_summary),
+                "visualizations":       plots_json,
+                "column_info":          convert_to_serializable({
+                    "original_columns": list(df.columns),
+                    "cleaned_columns":  list(cleaned_df.columns),
+                    "data_types":       cleaned_df.dtypes.astype(str).to_dict(),
+                    "missing_values":   cleaned_df.isnull().sum().to_dict(),
+                    "unique_counts":    cleaned_df.nunique().to_dict(),
+                }),
+                "sample_data": {
+                    "original": convert_to_serializable(df.head()),
+                    "cleaned":  convert_to_serializable(cleaned_df.head()),
+                },
+            })
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        msg = str(e)
+        if "429" in msg or "quota" in msg.lower():
+            return JSONResponse(status_code=429, content={"success": False, "error": "API quota exceeded", "message": msg})
+        if "csv" in msg.lower() or "pandas" in msg.lower():
+            return JSONResponse(status_code=400, content={"success": False, "error": "Invalid CSV", "message": msg})
+        return JSONResponse(status_code=500, content={"success": False, "error": "Analysis failed", "message": msg})
+
+
+# ============================================================
+# CLEAN DATA
+# ============================================================
+@app.post("/clean-data")
+@limiter.limit("20/minute")
+def clean_data_endpoint(
+    request: Request,
+    body:    DataAnalysisRequest,
+    _:       dict = Depends(get_current_user_optional),
+):
+    try:
+        csv_bytes = base64.b64decode(body.csv_base64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(csv_bytes)
+            tmp_path = tmp.name
+        try:
+            df       = pd.read_csv(tmp_path)
+            analyzer = DataAnalyzer()
+
+            cleaned_df, cleaning_log = analyzer.deep_clean_data(df)
+            statistical_summary      = analyzer.statistical_analysis(cleaned_df)
+            plots                    = analyzer.create_visualizations(cleaned_df)
+            plots_json               = {}
+            for name, fig in plots.items():
+                try:
+                    plots_json[name] = fix_plotly_bools(fig.to_dict())
+                except Exception as pe:
+                    plots_json[name] = {"error": str(pe)}
+
+            return JSONResponse(content={
+                "success":             True,
+                "original_shape":      df.shape,
+                "cleaned_shape":       cleaned_df.shape,
+                "cleaning_log":        cleaning_log,
+                "statistical_summary": statistical_summary,
+                "visualizations":      plots_json,
+                "column_info": {
+                    "original_columns": list(df.columns),
+                    "cleaned_columns":  list(cleaned_df.columns),
+                    "data_types":       cleaned_df.dtypes.astype(str).to_dict(),
+                    "missing_values":   cleaned_df.isnull().sum().to_dict(),
+                    "unique_counts":    cleaned_df.nunique().to_dict(),
+                },
+                "sample_data": {
+                    "original": df.head().to_dict("records"),
+                    "cleaned":  cleaned_df.head().to_dict("records"),
+                },
+            })
+        finally:
+            os.unlink(tmp_path)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"success": False, "error": "Cleaning failed", "message": str(e)})
+
+
+# ============================================================
+# SQL GENERATOR  (rate-limited: 20/minute per user)
+# ============================================================
+@app.post("/generate-sql")
+@limiter.limit("20/minute")
+def generate_sql_endpoint(
+    request: Request,
+    body:    SQLGenerationRequest,
+    current_user: dict = Depends(get_current_user_optional),
+):
+    try:
+        schema_section     = f"\n\nDatabase Schema:\n{body.db_schema}" if body.db_schema else ""
+        query_type_section = f"\nQuery Type: {body.query_type}" if body.query_type else ""
+
+        prompt = f"""You are an expert SQL developer. Generate a SQL query based on the following:
+
+Database Type: {body.db_type}{query_type_section}{schema_section}
+
+User Request: {body.description}
+
+Respond ONLY in the following JSON format (no markdown, no extra text):
+{{
+  "sql_query": "<the SQL query>",
+  "explanation": "<plain English explanation of what the query does and why>",
+  "suggestions": "<performance tips, index recommendations, or alternative approaches>"
+}}"""
+
+        client = Groq()
+        resp   = client.chat.completions.create(
+            model       = "meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature = 0.1,
+            messages    = [
+                {"role": "system", "content": "You are an expert SQL developer. Always respond with valid JSON only."},
+                {"role": "user",   "content": prompt},
+            ],
+        )
+        raw = resp.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
 
         try:
-            df = pd.read_csv(tmp_path)
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            result = {"sql_query": raw, "explanation": "Raw output returned.", "suggestions": ""}
+
+        # Save to user session history
+        if body.session_id:
+            email       = (current_user or {}).get("email", "anonymous")
+            session_key = user_session_key(email, body.session_id)
+            chat_store.setdefault(session_key, [])
+            chat_store[session_key].append({"type": "human", "content": f"[SQL] {body.description}"})
+            chat_store[session_key].append({"type": "ai",    "content": result.get("sql_query", "")})
+            cache["chat_store"] = chat_store
+
+        return JSONResponse(content={
+            "success":     True,
+            "sql_query":   result.get("sql_query", ""),
+            "explanation": result.get("explanation", ""),
+            "suggestions": result.get("suggestions", ""),
+            "db_type":     body.db_type,
+            "query_type":  body.query_type,
+        })
+
+    except Exception as e:
+        msg = str(e)
+        if "429" in msg or "quota" in msg.lower():
+            return JSONResponse(status_code=429, content={"success": False, "error": "API quota exceeded", "message": msg})
+        return JSONResponse(status_code=500, content={"success": False, "error": "SQL generation failed", "message": msg})
+
+
+# ============================================================
+# DIAGNOSE DATA
+# ============================================================
+@app.post("/diagnose-data")
+@limiter.limit("20/minute")
+def diagnose_data_endpoint(
+    request: Request,
+    body:    DataAugmentationRequest,
+    _:       dict = Depends(get_current_user_optional),
+):
+    try:
+        csv_bytes = base64.b64decode(body.csv_base64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(csv_bytes)
+            tmp_path = tmp.name
+        try:
+            df        = pd.read_csv(tmp_path)
             augmentor = DataAugmentor()
             diagnosis = augmentor.diagnose(df)
             return JSONResponse(content={"success": True, "diagnosis": convert_to_serializable(diagnosis)})
         finally:
             os.unlink(tmp_path)
-
     except Exception as e:
-        return JSONResponse(status_code=500, content={
-            "success": False,
-            "error": "Diagnosis failed",
-            "message": str(e)
-        })
+        return JSONResponse(status_code=500, content={"success": False, "error": "Diagnosis failed", "message": str(e)})
 
 
+# ============================================================
+# AUGMENT DATA
+# ============================================================
 @app.post("/augment-data")
-def augment_data_endpoint(request: DataAugmentationRequest):
-    """
-    Stage 2 & 3: Apply augmentation based on user-selected options and return
-    augmented CSV + change log.
-    """
+@limiter.limit("20/minute")
+def augment_data_endpoint(
+    request: Request,
+    body:    DataAugmentationRequest,
+    _:       dict = Depends(get_current_user_optional),
+):
     try:
-        csv_bytes = base64.b64decode(request.csv_base64)
+        csv_bytes = base64.b64decode(body.csv_base64)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
             tmp.write(csv_bytes)
             tmp_path = tmp.name
-
         try:
-            df = pd.read_csv(tmp_path)
+            df        = pd.read_csv(tmp_path)
             augmentor = DataAugmentor()
-
-            options = {
-                "apply_imputation": request.apply_imputation,
-                "apply_outlier_treatment": request.apply_outlier_treatment,
-                "apply_synthetic_rows": request.apply_synthetic_rows,
-                "apply_deduplication": request.apply_deduplication,
-                "apply_transformations": request.apply_transformations,
+            options   = {
+                "apply_imputation":        body.apply_imputation,
+                "apply_outlier_treatment": body.apply_outlier_treatment,
+                "apply_synthetic_rows":    body.apply_synthetic_rows,
+                "apply_deduplication":     body.apply_deduplication,
+                "apply_transformations":   body.apply_transformations,
             }
-
             augmented_df, change_log = augmentor.augment(df, options)
-
-            # Encode augmented CSV back to base64
-            csv_buffer = augmented_df.to_csv(index=False)
-            augmented_b64 = base64.b64encode(csv_buffer.encode("utf-8")).decode("utf-8")
+            augmented_b64 = base64.b64encode(
+                augmented_df.to_csv(index=False).encode("utf-8")
+            ).decode("utf-8")
 
             return JSONResponse(content={
-                "success": True,
-                "original_shape": list(df.shape),
-                "augmented_shape": list(augmented_df.shape),
-                "change_log": convert_to_serializable(change_log),
-                "augmented_csv_base64": augmented_b64,
-                "augmented_filename": f"augmented_{request.csv_filename}",
-                "sample_original": convert_to_serializable(df.head()),
-                "sample_augmented": convert_to_serializable(augmented_df.head())
+                "success":               True,
+                "original_shape":        list(df.shape),
+                "augmented_shape":       list(augmented_df.shape),
+                "change_log":            convert_to_serializable(change_log),
+                "augmented_csv_base64":  augmented_b64,
+                "augmented_filename":    f"augmented_{body.csv_filename}",
+                "sample_original":       convert_to_serializable(df.head()),
+                "sample_augmented":      convert_to_serializable(augmented_df.head()),
             })
         finally:
             os.unlink(tmp_path)
-
     except Exception as e:
-        return JSONResponse(status_code=500, content={
-            "success": False,
-            "error": "Augmentation failed",
-            "message": str(e),
-            "error_type": "augmentation_error"
-        })
+        return JSONResponse(status_code=500, content={"success": False, "error": "Augmentation failed", "message": str(e)})
