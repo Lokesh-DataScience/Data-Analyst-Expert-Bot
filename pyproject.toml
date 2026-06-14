@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "argon2-cffi>=25.1.0",
+    "bcrypt==4.0.1",
     "diskcache==5.6.3",
     "faiss-cpu==1.11.0",
     "fastapi==0.115.12",
@@ -14,10 +16,13 @@ dependencies = [
     "langchain-groq==0.3.2",
     "langchain-huggingface==0.2.0",
     "matplotlib==3.10.3",
+    "passlib[bcrypt]>=1.7.4",
     "plotly==6.1.2",
+    "pydantic[email]>=2.11.10",
     "pypdf==5.6.0",
     "pypdf2==3.0.1",
     "python-dotenv==1.1.0",
+    "python-jose[cryptography]>=3.5.0",
     "python-multipart==0.0.20",
     "seaborn==0.13.2",
     "selenium==4.33.0",

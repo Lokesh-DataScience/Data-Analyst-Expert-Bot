@@ -5,17 +5,8 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import google.generativeai as genai
 
 class DataAnalyzer:
-    def __init__(self):
-        # Load environment variables from .env file
-        load_dotenv()
-        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("No Gemini or Google API key found in .env file.")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash') 
     def deep_clean_data(self, df):
         """Advanced data cleaning: string, date, categorical, outliers, irrelevant columns, encoding"""
         cleaned_df = df.copy()

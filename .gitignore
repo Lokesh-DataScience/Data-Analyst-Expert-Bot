@@ -8,3 +8,6 @@
 
 # Ignore diskcache
 .cache/
+
+# Database
+users.db

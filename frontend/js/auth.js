@@ -1,59 +1,55 @@
 /* ============================================================
    AUTH MODULE
-   Talks to (future) backend endpoints:
-     POST /auth/login   { email, password }        -> { token, user:{name,email} }
-     POST /auth/signup  { name, email, password }  -> { token, user:{name,email} }
-   Falls back to a local "demo mode" if the backend auth
-   endpoints aren't available yet, so the UI is usable
-   while auth is being wired up server-side.
+   Endpoints expected from backend:
+     POST /auth/login   { email, password }       -> { token, user:{id,name,email} }
+     POST /auth/signup  { name, email, password } -> { token, user:{id,name,email} }
+   Falls back to demo mode if backend returns 404 or is unreachable.
 ============================================================ */
 
 const AUTH_STORAGE_KEY = 'dab_auth';
 
+/* ── Storage helpers ── */
 function getApiBase(){
-  return (document.getElementById('apiBaseInput')?.value || 'http://localhost:8000').trim().replace(/\/$/, '');
-}
-
-function getAuth(){
-  try{ return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)); }
-  catch(e){ return null; }
+  return (document.getElementById('apiBaseInput')?.value || 'http://localhost:8000')
+    .trim().replace(/\/$/, '');
 }
 function setAuth(auth, persist){
-  if(persist) localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
-  else sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
+  const json = JSON.stringify(auth);
+  if(persist) localStorage.setItem(AUTH_STORAGE_KEY, json);
+  else sessionStorage.setItem(AUTH_STORAGE_KEY, json);
+}
+function loadAuth(){
+  try{
+    return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY))
+        || JSON.parse(sessionStorage.getItem(AUTH_STORAGE_KEY));
+  }catch(e){ return null; }
 }
 function clearAuth(){
   localStorage.removeItem(AUTH_STORAGE_KEY);
   sessionStorage.removeItem(AUTH_STORAGE_KEY);
 }
-function loadAuth(){
-  try{
-    return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) ||
-           JSON.parse(sessionStorage.getItem(AUTH_STORAGE_KEY));
-  }catch(e){ return null; }
-}
-function authToken(){
-  const a = loadAuth();
-  return a ? a.token : null;
-}
+function authToken(){ const a = loadAuth(); return a ? a.token : null; }
 function authHeaders(){
   const t = authToken();
   return t ? { 'Authorization': 'Bearer ' + t } : {};
 }
 
-/* ============================================================
-   UI: switch between login / signup forms
-============================================================ */
+/* ── HTML escape ── */
+function escapeHtmlAuth(str){
+  return String(str).replace(/[&<>"']/g,
+    c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ── Switch between login / signup ── */
 document.querySelectorAll('[data-switch]').forEach(link=>{
   link.addEventListener('click', e=>{
     e.preventDefault();
-    const target = link.dataset.switch;
     document.querySelectorAll('.auth-form').forEach(f=>f.classList.remove('active'));
-    document.getElementById(target+'Form').classList.add('active');
+    document.getElementById(link.dataset.switch + 'Form').classList.add('active');
   });
 });
 
-/* show / hide password */
+/* ── Show / hide password ── */
 document.querySelectorAll('.pw-toggle').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     const input = document.getElementById(btn.dataset.target);
@@ -65,7 +61,7 @@ document.querySelectorAll('.pw-toggle').forEach(btn=>{
 
 document.getElementById('forgotLink')?.addEventListener('click', e=>{
   e.preventDefault();
-  alert('Password reset isn\'t wired up yet — this will be available once the auth backend is connected.');
+  alert('Password reset will be available once the auth backend is connected.');
 });
 
 /* ============================================================
@@ -73,17 +69,17 @@ document.getElementById('forgotLink')?.addEventListener('click', e=>{
 ============================================================ */
 document.getElementById('loginForm').addEventListener('submit', async e=>{
   e.preventDefault();
-  const status = document.getElementById('loginStatus');
-  const email = document.getElementById('loginEmail').value.trim();
+  const statusEl = document.getElementById('loginStatus');
+  const email    = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
   const remember = document.getElementById('loginRemember').checked;
-  const btn = e.target.querySelector('button[type=submit]');
+  const btn      = e.target.querySelector('button[type=submit]');
 
   btn.disabled = true;
-  status.innerHTML = '<div class="status-msg info"><span class="spinner"></span> Signing in...</div>';
+  statusEl.innerHTML = '<div class="status-msg info"><span class="spinner"></span> Signing in...</div>';
 
   try{
-    const res = await fetch(getApiBase()+'/auth/login', {
+    const res = await fetch(getApiBase() + '/auth/login', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ email, password })
@@ -91,24 +87,26 @@ document.getElementById('loginForm').addEventListener('submit', async e=>{
 
     if(res.ok){
       const data = await res.json();
-      setAuth({ token:data.token, user:data.user || {name:email.split('@')[0], email} }, remember);
+      setAuth({ token: data.token, user: data.user || { name: email.split('@')[0], email } }, remember);
       enterApp();
       return;
     }
 
     if(res.status === 404){
-      // Backend auth not implemented yet -> demo fallback
-      status.innerHTML = '<div class="status-msg warn">Auth backend not found — continuing in demo mode.</div>';
-      setAuth({ token:'demo-token', user:{ name:email.split('@')[0] || 'Demo User', email } }, remember);
+      statusEl.innerHTML = '<div class="status-msg warn">Auth backend not found — continuing in demo mode.</div>';
+      setAuth({ token:'demo-token', user:{ name: email.split('@')[0] || 'Demo User', email } }, remember);
       setTimeout(enterApp, 700);
       return;
     }
 
-    const err = await res.json().catch(()=>({}));
-    status.innerHTML = `<div class="status-msg error">${escapeHtmlAuth(err.detail || err.message || 'Invalid email or password.')}</div>`;
+    // Try to parse error detail; res body already consumed above if !ok
+    let detail = 'Invalid email or password.';
+    try{ const err = await res.json(); detail = err.detail || err.message || detail; }catch(_){}
+    statusEl.innerHTML = `<div class="status-msg error">${escapeHtmlAuth(detail)}</div>`;
+
   }catch(err){
-    status.innerHTML = '<div class="status-msg warn">Could not reach the API — continuing in demo mode.</div>';
-    setAuth({ token:'demo-token', user:{ name:email.split('@')[0] || 'Demo User', email } }, remember);
+    statusEl.innerHTML = '<div class="status-msg warn">Could not reach the API — continuing in demo mode.</div>';
+    setAuth({ token:'demo-token', user:{ name: email.split('@')[0] || 'Demo User', email } }, remember);
     setTimeout(enterApp, 700);
   }
   btn.disabled = false;
@@ -119,17 +117,31 @@ document.getElementById('loginForm').addEventListener('submit', async e=>{
 ============================================================ */
 document.getElementById('signupForm').addEventListener('submit', async e=>{
   e.preventDefault();
-  const status = document.getElementById('signupStatus');
-  const name = document.getElementById('signupName').value.trim();
-  const email = document.getElementById('signupEmail').value.trim();
-  const password = document.getElementById('signupPassword').value;
-  const btn = e.target.querySelector('button[type=submit]');
+  const statusEl  = document.getElementById('signupStatus');
+  const name      = document.getElementById('signupName').value.trim();
+  const email     = document.getElementById('signupEmail').value.trim();
+  const password  = document.getElementById('signupPassword').value;
+  const btn       = e.target.querySelector('button[type=submit]');
+
+  // Basic client-side validation
+  if(!name){
+    statusEl.innerHTML = '<div class="status-msg error">Please enter your full name.</div>';
+    return;
+  }
+  if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    statusEl.innerHTML = '<div class="status-msg error">Please enter a valid email address.</div>';
+    return;
+  }
+  if(password.length < 8){
+    statusEl.innerHTML = '<div class="status-msg error">Password must be at least 8 characters.</div>';
+    return;
+  }
 
   btn.disabled = true;
-  status.innerHTML = '<div class="status-msg info"><span class="spinner"></span> Creating your account...</div>';
+  statusEl.innerHTML = '<div class="status-msg info"><span class="spinner"></span> Creating your account...</div>';
 
   try{
-    const res = await fetch(getApiBase()+'/auth/signup', {
+    const res = await fetch(getApiBase() + '/auth/signup', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ name, email, password })
@@ -137,22 +149,24 @@ document.getElementById('signupForm').addEventListener('submit', async e=>{
 
     if(res.ok){
       const data = await res.json();
-      setAuth({ token:data.token, user:data.user || {name, email} }, true);
+      setAuth({ token: data.token, user: data.user || { name, email } }, true);
       enterApp();
       return;
     }
 
     if(res.status === 404){
-      status.innerHTML = '<div class="status-msg warn">Auth backend not found — continuing in demo mode.</div>';
+      statusEl.innerHTML = '<div class="status-msg warn">Auth backend not found — continuing in demo mode.</div>';
       setAuth({ token:'demo-token', user:{ name, email } }, true);
       setTimeout(enterApp, 700);
       return;
     }
 
-    const err = await res.json().catch(()=>({}));
-    status.innerHTML = `<div class="status-msg error">${escapeHtmlAuth(err.detail || err.message || 'Could not create account.')}</div>`;
+    let detail = 'Could not create account.';
+    try{ const err = await res.json(); detail = err.detail || err.message || detail; }catch(_){}
+    statusEl.innerHTML = `<div class="status-msg error">${escapeHtmlAuth(detail)}</div>`;
+
   }catch(err){
-    status.innerHTML = '<div class="status-msg warn">Could not reach the API — continuing in demo mode.</div>';
+    statusEl.innerHTML = '<div class="status-msg warn">Could not reach the API — continuing in demo mode.</div>';
     setAuth({ token:'demo-token', user:{ name, email } }, true);
     setTimeout(enterApp, 700);
   }
@@ -173,33 +187,42 @@ document.getElementById('demoLoginBtn').addEventListener('click', ()=>{
 document.getElementById('logoutBtn').addEventListener('click', ()=>{
   if(!confirm('Sign out of DataAnalystBot?')) return;
   clearAuth();
+
+  // ── CRITICAL: reset initialized so initApp() runs fresh on next login ──
+  if(typeof state !== 'undefined') state.initialized = false;
+
   document.body.classList.remove('authenticated');
+
+  // Reset auth forms
+  document.querySelectorAll('.auth-form').forEach(f=>f.classList.remove('active'));
   document.getElementById('loginForm').classList.add('active');
-  document.getElementById('signupForm').classList.remove('active');
-  document.getElementById('loginEmail').value='';
-  document.getElementById('loginPassword').value='';
+  document.getElementById('loginEmail').value = '';
+  document.getElementById('loginPassword').value = '';
+  document.getElementById('loginStatus').innerHTML = '';
+  document.getElementById('signupStatus').innerHTML = '';
 });
 
 /* ============================================================
-   ENTER APP
+   ENTER APP — called after any successful auth
 ============================================================ */
 function enterApp(){
   const auth = loadAuth();
   if(!auth) return;
+
   const user = auth.user || {};
   const name = user.name || user.email || 'User';
-  document.getElementById('userNameLabel').textContent = name;
+
+  document.getElementById('userNameLabel').textContent  = name;
   document.getElementById('userEmailLabel').textContent = user.email || '';
-  document.getElementById('userAvatar').textContent = name.trim().charAt(0).toUpperCase() || 'U';
+  document.getElementById('userAvatar').textContent     = name.trim().charAt(0).toUpperCase() || 'U';
+
   document.body.classList.add('authenticated');
+
+  // Delegate to app.js
   if(typeof onAppEnter === 'function') onAppEnter();
 }
 
-function escapeHtmlAuth(str){
-  return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-/* Auto-login if a session already exists */
+/* ── Auto-login if a session token is already stored ── */
 (function(){
   const auth = loadAuth();
   if(auth) enterApp();

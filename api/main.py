@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 import json
 import numpy as np
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -20,10 +20,11 @@ import hashlib
 import pandas as pd
 from api.utils.data_analyzer import DataAnalyzer
 from api.utils.data_augmentor import DataAugmentor
-
+from api.auth import get_current_user, get_current_user_optional
+from api.auth import router as auth_router
 # Set up cache directory
 cache = Cache(directory="./.cache")
-# Store chat histories per session
+# Store chat histories per session3
 chat_store = cache.get("chat_store", {})
 
 # Util: Create stable hash key
@@ -31,8 +32,8 @@ def hash_data(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 app = FastAPI()
+app.include_router(auth_router)
 
-# CORS for Streamlit
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -114,14 +115,18 @@ def update_memory_and_history(memory, chat_history, session_id: str):
     chat_history_str = "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
     return chat_history_str
 
+def user_session_key(user_email: str, session_id: str) -> str:
+    return f"{user_email}:{session_id}"
+
 # Initialize retrieval chain once
 rag_chain = build_chain()
 
 @app.post("/chat")
-def chat_endpoint(request: QueryRequest):
-    memory = get_memory(request.session_id or "default")
-    session_key = request.session_id or "default"
-    
+def chat_endpoint(request: QueryRequest, current_user: dict = Depends(get_current_user_optional)):
+    email = (current_user or {}).get("email", "anonymous")
+    session_key = user_session_key(email, request.session_id or "default")
+    memory = get_memory(session_key)
+
     # Update memory + store human message
     chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
     
@@ -209,31 +214,23 @@ def get_pdf_context(pdf_base64: str, question: str = "") -> str:
         os.unlink(tmp_pdf_path)
 
 @app.post("/multi-upload")
-def multi_upload_endpoint(request: MultiUploadQueryRequest):
+def multi_upload_endpoint(request: MultiUploadQueryRequest, current_user: dict = Depends(get_current_user_optional)):
     """
     Accepts any combination of image, CSV, and PDF, and provides a context-aware answer.
     """
-    session_key = request.session_id or "default"
+    email = (current_user or {}).get("email", "anonymous")
+    session_key = user_session_key(email, request.session_id or "default")
     memory = get_memory(session_key)
     chat_history_str = update_memory_and_history(memory, request.chat_history, session_key)
-
     # Gather contexts
     contexts = []
 
-    # Image context
     if request.image_base64 and request.image_type:
-        image_context = get_image_context(request.image_base64, request.image_type)
-        contexts.append(f"Image context: {image_context}")
-
-    # CSV context
+        contexts.append(f"Image context: {get_image_context(request.image_base64, request.image_type)}")
     if request.csv_base64 and request.csv_filename:
-        csv_context = get_csv_context(request.csv_base64, request.question or "")
-        contexts.append(f"CSV context: {csv_context}")
-
-    # PDF context
+        contexts.append(f"CSV context: {get_csv_context(request.csv_base64, request.question or '')}")
     if request.pdf_base64 and request.pdf_filename:
-        pdf_context = get_pdf_context(request.pdf_base64, request.question or "")
-        contexts.append(f"PDF context: {pdf_context}")
+        contexts.append(f"PDF context: {get_pdf_context(request.pdf_base64, request.question or '')}")
 
     # Combine all contexts
     combined_context = "\n\n".join(contexts) if contexts else None
@@ -265,28 +262,45 @@ def multi_upload_endpoint(request: MultiUploadQueryRequest):
     return {"response": answer}
 
 @app.get("/recent-chats/{session_id}")
-def get_recent_chats(session_id: str):
-    return {"chat_history": chat_store.get(session_id, [])}
+def get_recent_chats(
+    session_id: str,
+    current_user: dict = Depends(get_current_user_optional)
+):
+    email = (current_user or {}).get("email", "anonymous")
+    key = user_session_key(email, session_id)
+    return {"chat_history": chat_store.get(key, [])}
 
 @app.get("/recent-chat-titles")
-def get_recent_chat_titles():
+def get_recent_chat_titles(
+    current_user: dict = Depends(get_current_user_optional)
+):
+    email = (current_user or {}).get("email", "anonymous")
+    prefix = f"{email}:"
     titles = []
-    for session_id, history in chat_store.items():
+    for key, history in chat_store.items():
+        if not key.startswith(prefix):   # ← only this user's sessions
+            continue
+        session_id = key[len(prefix):]   # strip the email: prefix
         for msg in history:
             if msg["type"] == "human":
                 titles.append({
                     "session_id": session_id,
                     "title": msg["content"]
                 })
-                break  # Only take the first human message
+                break
     return {"sessions": titles}
 
 @app.post("/save-chat")
-def save_chat_endpoint(data: dict):
+def save_chat_endpoint(
+    data: dict,
+    current_user: dict = Depends(get_current_user_optional)
+):
+    email = (current_user or {}).get("email", "anonymous")
     session_id = data.get("session_id")
     chat_history = data.get("chat_history", [])
     if session_id and chat_history:
-        chat_store[session_id] = chat_history
+        key = user_session_key(email, session_id)
+        chat_store[key] = chat_history
         cache["chat_store"] = chat_store
         return {"success": True}
     return {"success": False, "error": "Missing session_id or chat_history"}
@@ -383,7 +397,7 @@ def clean_for_json(dataframe):
     return dataframe
 
 @app.post("/analyze-data")
-def analyze_data_endpoint(request: DataAnalysisRequest):
+def analyze_data_endpoint(request: DataAnalysisRequest, current_user: dict = Depends(get_current_user_optional)):
     """
     Comprehensive data analysis endpoint that performs:
     - Data cleaning and preprocessing
@@ -583,13 +597,14 @@ def clean_data_endpoint(request: DataAnalysisRequest):
         )
 
 @app.post("/generate-sql")
-def generate_sql_endpoint(request: SQLGenerationRequest):
+def generate_sql_endpoint(request: SQLGenerationRequest, current_user: dict = Depends(get_current_user_optional)):
     """
     SQL query generation endpoint that:
     - Accepts a natural language description
     - Optionally uses provided schema or auto-detects from context
     - Returns a generated SQL query, explanation, and optimization suggestions
     """
+    email = (current_user or {}).get("email", "anonymous")
     try:
         # Build a structured prompt for the SQL generation
         schema_section = f"\n\nDatabase Schema:\n{request.db_schema}" if request.db_schema else ""
@@ -597,16 +612,16 @@ def generate_sql_endpoint(request: SQLGenerationRequest):
 
         prompt = f"""You are an expert SQL developer. Generate a SQL query based on the following:
 
-Database Type: {request.db_type}{query_type_section}{schema_section}
+                    Database Type: {request.db_type}{query_type_section}{schema_section}
 
-User Request: {request.description}
+                    User Request: {request.description}
 
-Respond ONLY in the following JSON format (no markdown, no extra text):
-{{
-  "sql_query": "<the SQL query>",
-  "explanation": "<plain English explanation of what the query does and why>",
-  "suggestions": "<performance tips, index recommendations, or alternative approaches>"
-}}"""
+                    Respond ONLY in the following JSON format (no markdown, no extra text):
+                    {{
+                    "sql_query": "<the SQL query>",
+                    "explanation": "<plain English explanation of what the query does and why>",
+                    "suggestions": "<performance tips, index recommendations, or alternative approaches>"
+                    }}"""
 
         client = Groq()
         chat_completion = client.chat.completions.create(
@@ -646,7 +661,7 @@ Respond ONLY in the following JSON format (no markdown, no extra text):
 
         # Optionally store in session history
         if request.session_id:
-            session_key = request.session_id
+            session_key = user_session_key(email, request.session_id) if request.session_id else None
             chat_store.setdefault(session_key, [])
             chat_store[session_key].append({
                 "type": "human",
