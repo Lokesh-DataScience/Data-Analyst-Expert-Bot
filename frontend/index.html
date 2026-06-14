@@ -7,102 +7,17 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/styles.css">
-<style>
-/* ── Extra styles for new features ── */
-
-/* Forgot / Reset password forms */
-#forgotForm, #resetForm{ display:none; }
-#forgotForm.active, #resetForm.active{ display:block; animation:fadeUp 0.35s ease; }
-
-/* Profile modal */
-.modal-overlay{
-  display:none; position:fixed; inset:0; z-index:200;
-  background:rgba(16,19,28,0.55); backdrop-filter:blur(4px);
-  align-items:center; justify-content:center;
-}
-.modal-overlay.open{ display:flex; }
-.modal{
-  background:var(--surface); border:1px solid var(--border);
-  border-radius:var(--radius-lg); padding:32px 30px 26px;
-  width:100%; max-width:460px; box-shadow:var(--shadow-lg);
-  animation:fadeUp 0.25s ease;
-}
-.modal-header{
-  display:flex; align-items:center; justify-content:space-between;
-  margin-bottom:22px;
-}
-.modal-header h2{ font-family:var(--disp); font-size:20px; font-weight:700; }
-.modal-close{
-  background:none; border:none; cursor:pointer; color:var(--text-muted);
-  font-size:20px; line-height:1; padding:4px 8px; border-radius:6px;
-}
-.modal-close:hover{ background:var(--bg); color:var(--text); }
-
-/* Profile avatar in modal */
-.profile-avatar-row{
-  display:flex; align-items:center; gap:16px; margin-bottom:22px;
-  padding:14px; background:var(--bg); border:1px solid var(--border);
-  border-radius:var(--radius-sm);
-}
-.profile-avatar-big{
-  width:52px; height:52px; border-radius:12px; flex-shrink:0;
-  background:linear-gradient(135deg, var(--accent), #8b8ef9);
-  display:flex; align-items:center; justify-content:center;
-  font-family:var(--disp); font-weight:700; font-size:20px; color:#fff;
-}
-.profile-avatar-meta .pam-name{ font-weight:700; font-size:15px; }
-.profile-avatar-meta .pam-email{ font-size:12px; color:var(--text-muted); margin-top:2px; }
-
-/* Settings tabs inside modal */
-.modal-tabs{
-  display:flex; gap:4px; margin-bottom:20px;
-  border-bottom:1px solid var(--border);
-}
-.modal-tab{
-  font-family:var(--mono); font-size:12px; letter-spacing:0.04em;
-  text-transform:uppercase; color:var(--text-muted); background:none;
-  border:none; padding:9px 14px; cursor:pointer;
-  border-bottom:2px solid transparent; transition:color 0.15s, border-color 0.15s;
-}
-.modal-tab:hover{ color:var(--text); }
-.modal-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
-.modal-section{ display:none; }
-.modal-section.active{ display:block; animation:fadeUp 0.2s ease; }
-
-/* Profile button in sidebar */
-.profile-btn{
-  background:none; border:none; cursor:pointer; color:rgba(255,255,255,0.55);
-  padding:5px; border-radius:6px; flex-shrink:0; display:flex;
-  transition:background 0.15s, color 0.15s;
-}
-.profile-btn svg{ width:16px; height:16px; }
-.profile-btn:hover{ background:rgba(91,95,240,0.2); color:var(--accent); }
-
-/* Rate limit warning */
-.rate-warn{
-  font-family:var(--mono); font-size:11px; color:var(--warn);
-  background:var(--warn-bg); border:1px solid #fde6c4;
-  border-radius:6px; padding:6px 10px; margin-bottom:10px; display:none;
-}
-.rate-warn.visible{ display:block; }
-</style>
 </head>
 <body>
 
-<!-- ============================================================
-     AUTH SCREENS
-============================================================ -->
+<!-- ============================================================ AUTH ============================================================ -->
 <div id="authScreen" class="auth-screen">
   <div class="auth-bg-grid"></div>
   <div class="auth-card">
     <div class="auth-brand">
       <div class="brand-mark">DA</div>
-      <div>
-        <h1>DataAnalystBot</h1>
-        <span>AI Data Analysis Platform</span>
-      </div>
+      <div><h1>DataAnalystBot</h1><span>AI Data Analysis Platform</span></div>
     </div>
-
     <!-- LOGIN -->
     <form id="loginForm" class="auth-form active">
       <h2>Welcome back</h2>
@@ -124,7 +39,6 @@
       <button type="button" class="btn block" id="demoLoginBtn">Continue with demo account</button>
       <p class="auth-switch">Don't have an account? <a href="#" data-switch="signup">Create one</a></p>
     </form>
-
     <!-- SIGNUP -->
     <form id="signupForm" class="auth-form">
       <h2>Create your account</h2>
@@ -143,7 +57,6 @@
       <button type="submit" class="btn primary block">Create account</button>
       <p class="auth-switch">Already have an account? <a href="#" data-switch="login">Sign in</a></p>
     </form>
-
     <!-- FORGOT PASSWORD -->
     <form id="forgotForm" class="auth-form">
       <h2>Reset your password</h2>
@@ -154,8 +67,7 @@
       <button type="submit" class="btn primary block">Send reset link</button>
       <p class="auth-switch"><a href="#" data-switch="login">← Back to sign in</a></p>
     </form>
-
-    <!-- RESET PASSWORD (shown when ?reset_token=... is in the URL) -->
+    <!-- RESET PASSWORD -->
     <form id="resetForm" class="auth-form">
       <h2>Set new password</h2>
       <p class="auth-sub">Choose a strong password for your account.</p>
@@ -171,16 +83,13 @@
   <div class="auth-footer">&copy; 2025 <a href="https://lokesh-datascience.github.io/portfolio/" target="_blank">Developed by Lokesh Kumar</a></div>
 </div>
 
-<!-- ============================================================
-     PROFILE MODAL
-============================================================ -->
+<!-- ============================================================ PROFILE MODAL ============================================================ -->
 <div class="modal-overlay" id="profileModal">
   <div class="modal">
     <div class="modal-header">
       <h2>Account settings</h2>
       <button class="modal-close" id="profileModalClose">✕</button>
     </div>
-
     <div class="profile-avatar-row">
       <div class="profile-avatar-big" id="modalAvatar">U</div>
       <div class="profile-avatar-meta">
@@ -188,13 +97,10 @@
         <div class="pam-email" id="modalEmail">—</div>
       </div>
     </div>
-
     <div class="modal-tabs">
       <button class="modal-tab active" data-section="profileSection">Profile</button>
       <button class="modal-tab" data-section="passwordSection">Password</button>
     </div>
-
-    <!-- Profile section -->
     <div class="modal-section active" id="profileSection">
       <label class="field-label">Full name</label>
       <input type="text" id="profileName" placeholder="Your name">
@@ -208,8 +114,6 @@
       <div id="profileStatus"></div>
       <button class="btn primary block" id="saveProfileBtn">Save changes</button>
     </div>
-
-    <!-- Password section -->
     <div class="modal-section" id="passwordSection">
       <label class="field-label">Current password</label>
       <div class="pw-wrap">
@@ -232,9 +136,7 @@
   </div>
 </div>
 
-<!-- ============================================================
-     APP SHELL
-============================================================ -->
+<!-- ============================================================ APP SHELL ============================================================ -->
 <div id="appShell" class="app-shell">
 
   <!-- SIDEBAR -->
@@ -242,15 +144,40 @@
     <div class="brand">
       <div class="brand-mark">DA</div>
       <div class="brand-text">
-        <h1>DataAnalystBot</h1>
-        <span>AI Analysis Console</span>
+        <h1>DataAnalystBot</h1><span>AI Analysis Console</span>
       </div>
     </div>
 
+    <!-- ① Dark mode toggle -->
+    <button class="dark-toggle" id="darkToggle" title="Toggle dark mode">
+      <span>Dark mode</span>
+      <span class="dark-toggle-track"><span class="dark-toggle-thumb"></span></span>
+    </button>
+
+    <!-- ② New chat -->
     <button class="new-chat-btn" id="newChatBtn">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
       New chat
     </button>
+
+    <!-- ③ Export chat dropdown -->
+    <div class="export-dropdown">
+      <button class="export-btn" id="exportToggleBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Export chat
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-left:auto;width:11px;height:11px;opacity:0.6"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="export-dropdown-menu" id="exportMenu">
+        <button class="export-option" id="exportMdBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+          Download as Markdown
+        </button>
+        <button class="export-option" id="exportPdfBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          Download as PDF
+        </button>
+      </div>
+    </div>
 
     <nav class="nav-tabs" role="tablist">
       <button class="nav-tab active" data-tab="chat">
@@ -281,17 +208,31 @@
         <span class="status-dot" id="apiStatusDot" title="API connection status"></span>
         <input type="text" id="apiBaseInput" value="http://localhost:8000" spellcheck="false">
       </div>
+
+      <!-- ④ Image upload quota tracker -->
+      <div class="img-quota" id="imgQuota">
+        <div class="iq-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+          Images
+          <div class="iq-dots" id="iqDots">
+            <div class="iq-dot" id="iq1"></div>
+            <div class="iq-dot" id="iq2"></div>
+            <div class="iq-dot" id="iq3"></div>
+          </div>
+          <span id="iqCount" style="color:rgba(255,255,255,0.55)">0/3</span>
+        </div>
+        <span class="iq-reset" id="iqReset">resets in —</span>
+      </div>
+
       <div class="user-card" id="userCard">
         <div class="user-avatar" id="userAvatar">U</div>
         <div class="user-meta">
           <div class="user-name" id="userNameLabel">Guest</div>
           <div class="user-email" id="userEmailLabel">—</div>
         </div>
-        <!-- Profile settings button -->
         <button class="profile-btn" id="profileBtn" title="Account settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
         </button>
-        <!-- Logout -->
         <button class="logout-btn" id="logoutBtn" title="Sign out">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
         </button>
@@ -308,8 +249,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <div class="breadcrumb">
-          <span class="bc-root">Workspace</span>
-          <span class="bc-sep">/</span>
+          <span class="bc-root">Workspace</span><span class="bc-sep">/</span>
           <span class="bc-current" id="breadcrumbCurrent">Chat Analysis</span>
         </div>
       </div>
@@ -323,17 +263,17 @@
 
     <main class="main">
 
-      <!-- ===================== TAB: CHAT ===================== -->
+      <!-- CHAT TAB -->
       <section class="tab-panel active" id="tab-chat">
         <div class="page-intro">
           <h1>Chat with your data</h1>
           <p>Ask questions in plain English, or attach an image, spreadsheet, or PDF for the AI to analyze.</p>
         </div>
-        <div class="rate-warn" id="chatRateWarn">⚠️ Rate limit reached — you can send 20 messages per minute. Please wait a moment.</div>
+        <div class="rate-warn" id="chatRateWarn">⚠️ Rate limit reached — you can send 20 messages per minute. Please wait.</div>
         <div class="panel chat-panel">
           <div class="uploads-row">
             <div class="upload-slot">
-              <label class="field-label">Image</label>
+              <label class="field-label">Image <span id="imgQuotaInline" style="font-size:9px;color:var(--text-soft);margin-left:4px;">(0/3 used)</span></label>
               <div class="file-drop" data-target="chatImage">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
                 <span>Drop image or browse</span>
@@ -362,11 +302,9 @@
           </div>
           <div class="chat-window" id="chatWindow">
             <div class="chat-empty-state">
-              <div class="empty-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9" y2="9.01"/><line x1="15" y1="9" x2="15" y2="9.01"/></svg>
-              </div>
+              <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9" y2="9.01"/><line x1="15" y1="9" x2="15" y2="9.01"/></svg></div>
               <h3>Ask your first question</h3>
-              <p>Try: "Summarize the trends in this dataset" or attach a file above to get started.</p>
+              <p>Try: "Summarize the trends in this dataset" or attach a file above.</p>
             </div>
           </div>
           <div class="chat-input-row">
@@ -379,7 +317,7 @@
         </div>
       </section>
 
-      <!-- ===================== TAB: UPLOAD & ANALYSIS ===================== -->
+      <!-- UPLOAD TAB -->
       <section class="tab-panel" id="tab-upload">
         <div class="page-intro">
           <h1>Dataset analysis</h1>
@@ -400,7 +338,7 @@
         <div id="analysisResults"></div>
       </section>
 
-      <!-- ===================== TAB: SQL GENERATOR ===================== -->
+      <!-- SQL TAB -->
       <section class="tab-panel" id="tab-sql">
         <div class="page-intro">
           <h1>SQL query generator</h1>
@@ -449,7 +387,7 @@
         <div id="sqlResults"></div>
       </section>
 
-      <!-- ===================== TAB: AUGMENTATION ===================== -->
+      <!-- AUGMENTATION TAB -->
       <section class="tab-panel" id="tab-augment">
         <div class="page-intro">
           <h1>Data augmentation</h1>
@@ -474,7 +412,7 @@
   </div>
 </div>
 
-<!-- load app.js FIRST so onAppEnter is defined before auth.js auto-login runs -->
+<!-- app.js FIRST so onAppEnter is defined before auth.js auto-login IIFE runs -->
 <script src="js/app.js"></script>
 <script src="js/auth.js"></script>
 </body>
