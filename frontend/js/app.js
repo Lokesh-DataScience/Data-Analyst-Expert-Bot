@@ -63,13 +63,23 @@ function initApp(){
         document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
         document.getElementById('breadcrumbCurrent').textContent = tabLabels[btn.dataset.tab] || '';
         document.querySelector('.sidebar').classList.remove('open');
+        document.getElementById('sidebarOverlay').classList.remove('visible');
       });
     });
   });
   safeRun('sidebar toggle', ()=>{
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    const open  = ()=>{ sidebar.classList.add('open');  overlay.classList.add('visible'); };
+    const close = ()=>{ sidebar.classList.remove('open'); overlay.classList.remove('visible'); };
+
     document.getElementById('sidebarToggle').addEventListener('click', ()=>{
-      document.querySelector('.sidebar').classList.toggle('open');
+      sidebar.classList.contains('open') ? close() : open();
     });
+    overlay.addEventListener('click', close);
+
+    // Close sidebar automatically when a nav tab is tapped on mobile
+    document.querySelectorAll('.nav-tab, .chat-item').forEach(()=>{}); // no-op placeholder, real close handled in tab click handler below
   });
   safeRun('darkMode',          wireDarkMode);
   safeRun('exportChat',        wireExportChat);
@@ -160,8 +170,46 @@ function renderTable(rows, maxRows=null){
 }
 
 /* ============================================================
-   ① DARK MODE
+   ⑧ SKELETON LOADERS
 ============================================================ */
+function chatSkeletonHTML(){
+  return `
+    <div class="msg ai skel-msg">
+      <div class="skel-avatar skel"></div>
+      <div class="skel-bubble">
+        <div class="skel-line skel" style="width:85%;"></div>
+        <div class="skel-line skel" style="width:60%;"></div>
+        <div class="skel-line skel" style="width:40%;"></div>
+      </div>
+    </div>`;
+}
+
+function analysisSkeletonHTML(){
+  return `
+    <div class="skel-panel">
+      <div class="skel-title skel"></div>
+      <div class="skel-row skel"></div>
+      <div class="skel-row skel"></div>
+      <div class="skel-row skel"></div>
+    </div>
+    <div class="skel-panel">
+      <div class="skel-title skel" style="width:30%;"></div>
+      <div class="skel-table skel"></div>
+    </div>
+    <div class="skel-panel">
+      <div class="skel-title skel" style="width:35%;"></div>
+      <div class="skel-chart skel"></div>
+    </div>`;
+}
+
+function sqlSkeletonHTML(){
+  return `
+    <div class="skel-panel">
+      <div class="skel-title skel" style="width:35%;"></div>
+      <div class="skel-row skel" style="height:90px;border-radius:8px;"></div>
+    </div>`;
+}
+
 function wireDarkMode(){
   const DARK_KEY = 'dab_dark';
   const btn      = document.getElementById('darkToggle');
@@ -473,6 +521,13 @@ async function sendChatMessage(){
   renderChat();
   input.value = '';
 
+  // Show a skeleton "typing" placeholder while waiting for the response
+  const win = document.getElementById('chatWindow');
+  const skelEl = document.createElement('div');
+  skelEl.innerHTML = chatSkeletonHTML();
+  win.appendChild(skelEl.firstElementChild);
+  win.scrollTop = win.scrollHeight;
+
   const payload = {
     question:     text,
     session_id:   state.sessionId,
@@ -516,7 +571,8 @@ function wireUploadAnalysis(){
     const btn       = document.getElementById('analyzeBtn');
     const f         = state.files.analysisCsv;
     if(!f) return;
-    resultsEl.innerHTML = ''; btn.disabled = true;
+    resultsEl.innerHTML = analysisSkeletonHTML();
+    btn.disabled = true;
     statusBox(statusEl, 'info', '<span class="spinner"></span> Analyzing your data…');
     try{
       const b64     = await fileToBase64(f);
@@ -645,7 +701,8 @@ function wireSqlGenerator(){
     const btn       = document.getElementById('sqlGenerateBtn');
     const desc      = document.getElementById('sqlDescription').value.trim();
     if(!desc){ statusBox(statusEl, 'warn', '⚠️ Please describe what you want to query.'); return; }
-    resultsEl.innerHTML = ''; btn.disabled = true;
+    resultsEl.innerHTML = sqlSkeletonHTML();
+    btn.disabled = true;
     statusBox(statusEl, 'info', '<span class="spinner"></span> Generating SQL query…');
     const payload = {
       description: desc,

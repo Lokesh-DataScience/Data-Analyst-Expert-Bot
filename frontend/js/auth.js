@@ -9,7 +9,7 @@ const AUTH_STORAGE_KEY = 'dab_auth';
 
 /* ── Storage helpers ── */
 function getApiBase(){
-  return (document.getElementById('apiBaseInput')?.value || 'http://localhost:8000')
+  return (document.getElementById('apiBaseInput')?.value || '"https://292t1k9g-8000.inc1.devtunnels.ms"')
     .trim().replace(/\/$/, '');
 }
 function setAuth(auth, persist){
