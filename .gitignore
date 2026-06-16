@@ -1,6 +1,9 @@
 # Ignore env files
 .env\
 .env
+.env.development
+.env.production
+.env.test
 
 # Ignore virtual env
 .venv\
