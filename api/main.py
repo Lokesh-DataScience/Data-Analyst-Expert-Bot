@@ -1,10 +1,15 @@
-from dotenv import load_dotenv
-load_dotenv()
+from api.config import settings
+from api.logging_config import get_logger, configure_logging
+
+configure_logging()
+logger = get_logger(__name__)
+logger.info("Starting DataAnalystBot API", extra=settings.summary())
 
 import json
 import numpy as np
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from api.chains.rag_chain import (
@@ -63,14 +68,19 @@ def user_session_key(email: str, session_id: str) -> str:
 # ============================================================
 # APP
 # ============================================================
-app = FastAPI(title="DataAnalystBot API", version="3.0.0")
+app = FastAPI(title="DataAnalystBot API", version="4.0.0")
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Enforce HTTPS in production (typically redundant if your load balancer
+# already terminates TLS and redirects, but cheap insurance either way).
+if settings.FORCE_HTTPS:
+    app.add_middleware(HTTPSRedirectMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -252,7 +262,7 @@ def get_csv_context(csv_base64: str, question: str = "", user_email: str = None)
             finally:
                 os.unlink(tmp_path)
         except Exception as ingest_err:
-            print(f"[vectorstore] CSV ingestion skipped: {ingest_err}")
+            logger.warning("CSV ingestion skipped", exc_info=True, extra={"user": user_email})
 
     return context
 

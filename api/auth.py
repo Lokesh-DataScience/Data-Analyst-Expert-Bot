@@ -3,45 +3,48 @@ api/auth.py
 
 Full authentication module for DataAnalystBot (FastAPI).
 
-Provides:
-- User signup / login with bcrypt hashed passwords
-- JWT access tokens
-- SQLite-backed persistent user storage
-- Password reset via email token (fastapi-mail)
-- User profile update (name, email, password)
-- Rate limiting helpers (used by main.py via slowapi)
-- /auth/signup, /auth/login, /auth/me, /auth/logout
-- /auth/forgot-password, /auth/reset-password
-- /auth/update-profile
+Changes in this version:
+- User storage moved from raw sqlite3 to SQLAlchemy, which works
+  against both Postgres (production) and SQLite (local dev fallback)
+  via a single DATABASE_URL setting — see api/config.py.
+- JWT can now also be set as an HttpOnly, Secure, SameSite cookie
+  (in addition to being returned in the JSON body), controlled by
+  USE_SECURE_COOKIES. This reduces XSS exposure for any client that
+  reads the cookie instead of storing the token in localStorage.
+- Replaced print() debugging with structured logging.
 
 Install:
     pip install "passlib[bcrypt]" "python-jose[cryptography]" python-multipart
     pip install "bcrypt==4.0.1" fastapi-mail slowapi
+    pip install sqlalchemy psycopg2-binary
 """
 
-import os
 import secrets
-import sqlite3
 import uuid
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import create_engine, Column, String, DateTime, Integer, text
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+
+from api.config import settings
+from api.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # ============================================================
-# CONFIG
+# CONFIG (pulled from centralized settings)
 # ============================================================
-SECRET_KEY              = os.getenv("JWT_SECRET_KEY", "change-this-in-prod-please")
-ALGORITHM               = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24 * 7))  # 7 days
-RESET_TOKEN_EXPIRE_MINUTES  = 30  # password-reset link valid for 30 minutes
-DB_PATH                 = os.getenv("AUTH_DB_PATH", "users.db")
-FRONTEND_URL            = os.getenv("FRONTEND_URL", "http://localhost:5500")
+SECRET_KEY                  = settings.JWT_SECRET_KEY
+ALGORITHM                   = settings.JWT_ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+RESET_TOKEN_EXPIRE_MINUTES  = settings.RESET_TOKEN_EXPIRE_MINUTES
+FRONTEND_URL                = settings.FRONTEND_URL
 
 pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
@@ -50,113 +53,184 @@ auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 # ============================================================
-# DATABASE
+# DATABASE — SQLAlchemy (Postgres in prod, SQLite fallback in dev)
 # ============================================================
-@contextmanager
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def _normalize_db_url(url: str) -> str:
+    """
+    Some hosts (e.g. Heroku-style providers) hand out URLs starting
+    with postgres:// — SQLAlchemy 1.4+/2.0 requires postgresql://.
+    """
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
+DATABASE_URL = _normalize_db_url(settings.DATABASE_URL)
+
+engine_kwargs = {}
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # Sensible pool defaults for Postgres under concurrent load
+    engine_kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True)
+
+engine       = create_engine(DATABASE_URL, **engine_kwargs)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base         = declarative_base()
+
+logger.info(
+    "Database engine initialized",
+    extra={"dialect": engine.dialect.name, "app_env": settings.APP_ENV},
+)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id              = Column(String(36), primary_key=True)
+    name            = Column(String(100), nullable=False)
+    email           = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    token      = Column(String(128), primary_key=True)
+    email      = Column(String(255), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    used       = Column(Integer, default=0)
+
+
+Base.metadata.create_all(bind=engine)
+
+
+def get_db() -> Session:
+    db = SessionLocal()
     try:
-        yield conn
-        conn.commit()
+        yield db
     finally:
-        conn.close()
+        db.close()
 
 
-def init_db():
-    with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id               TEXT PRIMARY KEY,
-                name             TEXT NOT NULL,
-                email            TEXT UNIQUE NOT NULL,
-                hashed_password  TEXT NOT NULL,
-                created_at       TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                token       TEXT PRIMARY KEY,
-                email       TEXT NOT NULL,
-                expires_at  TEXT NOT NULL,
-                used        INTEGER DEFAULT 0
-            )
-        """)
+def _db_session() -> Session:
+    """Non-dependency-injected session for use in plain helper functions."""
+    return SessionLocal()
 
 
-init_db()
+# ============================================================
+# DB HELPERS
+# ============================================================
+def get_user_by_email(email: str) -> Optional[User]:
+    db = _db_session()
+    try:
+        return db.query(User).filter(User.email == email).first()
+    finally:
+        db.close()
 
 
-def get_user_by_email(email: str) -> Optional[sqlite3.Row]:
-    with get_db() as conn:
-        return conn.execute(
-            "SELECT * FROM users WHERE email = ?", (email,)
-        ).fetchone()
+def get_user_by_id(user_id: str) -> Optional[User]:
+    db = _db_session()
+    try:
+        return db.query(User).filter(User.id == user_id).first()
+    finally:
+        db.close()
 
 
-def get_user_by_id(user_id: str) -> Optional[sqlite3.Row]:
-    with get_db() as conn:
-        return conn.execute(
-            "SELECT * FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-
-
-def create_user(name: str, email: str, hashed_password: str) -> sqlite3.Row:
-    user_id    = str(uuid.uuid4())
-    created_at = datetime.utcnow().isoformat()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO users (id, name, email, hashed_password, created_at) VALUES (?,?,?,?,?)",
-            (user_id, name, email, hashed_password, created_at),
+def create_user(name: str, email: str, hashed_password: str) -> User:
+    db = _db_session()
+    try:
+        user = User(
+            id=str(uuid.uuid4()),
+            name=name,
+            email=email,
+            hashed_password=hashed_password,
+            created_at=datetime.utcnow(),
         )
-    return get_user_by_email(email)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        logger.info("User created", extra={"email": email, "user_id": user.id})
+        return user
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
-def update_user(user_id: str, name: str, email: str) -> Optional[sqlite3.Row]:
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET name = ?, email = ? WHERE id = ?",
-            (name, email, user_id),
-        )
-    return get_user_by_id(user_id)
+def update_user(user_id: str, name: str, email: str) -> Optional[User]:
+    db = _db_session()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+        user.name  = name
+        user.email = email
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def update_user_password(user_id: str, hashed_password: str) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET hashed_password = ? WHERE id = ?",
-            (hashed_password, user_id),
-        )
+    db = _db_session()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.hashed_password = hashed_password
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def store_reset_token(email: str, token: str) -> None:
-    expires_at = (datetime.utcnow() + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)).isoformat()
-    with get_db() as conn:
-        # Invalidate any existing unused tokens for this email
-        conn.execute(
-            "UPDATE password_reset_tokens SET used = 1 WHERE email = ? AND used = 0",
-            (email,),
-        )
-        conn.execute(
-            "INSERT INTO password_reset_tokens (token, email, expires_at, used) VALUES (?,?,?,0)",
-            (token, email, expires_at),
-        )
+    db = _db_session()
+    try:
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.email == email,
+            PasswordResetToken.used == 0,
+        ).update({"used": 1})
+
+        expires_at = datetime.utcnow() + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
+        db.add(PasswordResetToken(token=token, email=email, expires_at=expires_at, used=0))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
-def get_reset_token_row(token: str) -> Optional[sqlite3.Row]:
-    with get_db() as conn:
-        return conn.execute(
-            "SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0",
-            (token,),
-        ).fetchone()
+def get_reset_token_row(token: str) -> Optional[PasswordResetToken]:
+    db = _db_session()
+    try:
+        return db.query(PasswordResetToken).filter(
+            PasswordResetToken.token == token,
+            PasswordResetToken.used == 0,
+        ).first()
+    finally:
+        db.close()
 
 
 def mark_reset_token_used(token: str) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE password_reset_tokens SET used = 1 WHERE token = ?",
-            (token,),
-        )
+    db = _db_session()
+    try:
+        db.query(PasswordResetToken).filter(PasswordResetToken.token == token).update({"used": 1})
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 # ============================================================
@@ -231,10 +305,54 @@ def decode_token(token: str) -> dict:
 
 
 # ============================================================
+# SECURE COOKIE HELPERS
+# ============================================================
+def set_auth_cookie(response: Response, token: str) -> None:
+    """
+    Sets the JWT as an HttpOnly, Secure cookie when USE_SECURE_COOKIES
+    is enabled (defaults to on in production). The token is still also
+    returned in the JSON body for clients using localStorage/Bearer auth —
+    this is additive, not a replacement, so existing frontend code keeps
+    working unchanged while gaining the option to rely on the cookie.
+    """
+    if not settings.USE_SECURE_COOKIES:
+        return
+    response.set_cookie(
+        key=settings.COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=settings.is_production,   # only require HTTPS in prod; allows local http testing
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+
+
+def clear_auth_cookie(response: Response) -> None:
+    if not settings.USE_SECURE_COOKIES:
+        return
+    response.delete_cookie(key=settings.COOKIE_NAME, domain=settings.COOKIE_DOMAIN, path="/")
+
+
+def _extract_token(request: Request, bearer_token: Optional[str]) -> Optional[str]:
+    """Prefers the Authorization header; falls back to the secure cookie."""
+    if bearer_token:
+        return bearer_token
+    if settings.USE_SECURE_COOKIES:
+        return request.cookies.get(settings.COOKIE_NAME)
+    return None
+
+
+# ============================================================
 # DEPENDENCIES
 # ============================================================
-def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    """Required auth — raises 401 if missing/invalid."""
+def get_current_user(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+) -> dict:
+    """Required auth — raises 401 if missing/invalid. Checks header, then cookie."""
+    token = _extract_token(request, token)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -248,25 +366,35 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     user = get_user_by_email(email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    return {"id": user["id"], "name": user["name"], "email": user["email"]}
+    return {"id": user.id, "name": user.name, "email": user.email}
 
 
-def get_current_user_optional(token: str = Depends(oauth2_scheme)) -> Optional[dict]:
+def get_current_user_optional(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+) -> Optional[dict]:
     """Optional auth — returns None for demo/unauthenticated requests."""
+    token = _extract_token(request, token)
     if not token or token == "demo-token":
         return None
     try:
-        return get_current_user(token)
+        payload = decode_token(token)
+        email   = payload.get("sub")
+        if not email:
+            return None
+        user = get_user_by_email(email)
+        if not user:
+            return None
+        return {"id": user.id, "name": user.name, "email": user.email}
     except HTTPException:
         return None
 
 
 def get_rate_limit_key(request: Request) -> str:
-    """
-    Key for slowapi rate limiting.
-    Uses authenticated user email when available, falls back to IP.
-    """
+    """Key for slowapi rate limiting — authenticated user email, else IP."""
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not token and settings.USE_SECURE_COOKIES:
+        token = request.cookies.get(settings.COOKIE_NAME, "")
     if token and token != "demo-token":
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -275,36 +403,32 @@ def get_rate_limit_key(request: Request) -> str:
                 return f"user:{email}"
         except JWTError:
             pass
-    # Fallback to IP
     forwarded = request.headers.get("X-Forwarded-For")
     return f"ip:{forwarded.split(',')[0].strip() if forwarded else request.client.host}"
 
 
 # ============================================================
-# OPTIONAL EMAIL HELPER
+# EMAIL HELPER
 # ============================================================
 async def send_reset_email(email: str, token: str) -> bool:
-    """
-    Sends a password-reset email.
-    Requires MAIL_USERNAME, MAIL_PASSWORD, MAIL_FROM, MAIL_SERVER in .env.
-    Returns True on success, False if env vars are missing (dev fallback).
-    """
-    required = ["MAIL_USERNAME", "MAIL_PASSWORD", "MAIL_FROM", "MAIL_SERVER"]
-    if not all(os.getenv(k) for k in required):
-        # Dev mode: print the link to the terminal instead
+    required = [settings.MAIL_USERNAME, settings.MAIL_PASSWORD, settings.MAIL_FROM, settings.MAIL_SERVER]
+    if not all(required):
         reset_link = f"{FRONTEND_URL}/?reset_token={token}"
-        print(f"\n[DEV] Password reset link for {email}:\n{reset_link}\n")
+        logger.warning(
+            "Email not configured — printing reset link instead",
+            extra={"email": email, "reset_link": reset_link},
+        )
         return False
 
     try:
         from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
 
         conf = ConnectionConfig(
-            MAIL_USERNAME   = os.getenv("MAIL_USERNAME"),
-            MAIL_PASSWORD   = os.getenv("MAIL_PASSWORD"),
-            MAIL_FROM       = os.getenv("MAIL_FROM"),
-            MAIL_PORT       = int(os.getenv("MAIL_PORT", 587)),
-            MAIL_SERVER     = os.getenv("MAIL_SERVER"),
+            MAIL_USERNAME   = settings.MAIL_USERNAME,
+            MAIL_PASSWORD   = settings.MAIL_PASSWORD,
+            MAIL_FROM       = settings.MAIL_FROM,
+            MAIL_PORT       = settings.MAIL_PORT,
+            MAIL_SERVER     = settings.MAIL_SERVER,
             MAIL_STARTTLS   = True,
             MAIL_SSL_TLS    = False,
             USE_CREDENTIALS = True,
@@ -325,9 +449,10 @@ async def send_reset_email(email: str, token: str) -> bool:
         )
         fm = FastMail(conf)
         await fm.send_message(message)
+        logger.info("Password reset email sent", extra={"email": email})
         return True
     except Exception as e:
-        print(f"[EMAIL ERROR] {e}")
+        logger.error("Failed to send reset email", exc_info=True, extra={"email": email})
         return False
 
 
@@ -335,7 +460,7 @@ async def send_reset_email(email: str, token: str) -> bool:
 # ROUTES
 # ============================================================
 @auth_router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-def signup(req: SignupRequest):
+def signup(req: SignupRequest, response: Response):
     if len(req.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
     if get_user_by_email(req.email):
@@ -346,22 +471,29 @@ def signup(req: SignupRequest):
         email           = req.email,
         hashed_password = hash_password(req.password),
     )
-    token = create_access_token({"sub": user["email"]})
+    token = create_access_token({"sub": user.email})
+    set_auth_cookie(response, token)
+
     return TokenResponse(
         token = token,
-        user  = UserOut(id=user["id"], name=user["name"], email=user["email"]),
+        user  = UserOut(id=user.id, name=user.name, email=user.email),
     )
 
 
 @auth_router.post("/login", response_model=TokenResponse)
-def login(req: LoginRequest):
+def login(req: LoginRequest, response: Response):
     user = get_user_by_email(req.email)
-    if not user or not verify_password(req.password, user["hashed_password"]):
+    if not user or not verify_password(req.password, user.hashed_password):
+        logger.warning("Failed login attempt", extra={"email": req.email})
         raise HTTPException(status_code=401, detail="Invalid email or password.")
-    token = create_access_token({"sub": user["email"]})
+
+    token = create_access_token({"sub": user.email})
+    set_auth_cookie(response, token)
+    logger.info("User logged in", extra={"email": user.email})
+
     return TokenResponse(
         token = token,
-        user  = UserOut(id=user["id"], name=user["name"], email=user["email"]),
+        user  = UserOut(id=user.id, name=user.name, email=user.email),
     )
 
 
@@ -371,18 +503,14 @@ def me(current_user: dict = Depends(get_current_user)):
 
 
 @auth_router.post("/logout")
-def logout(current_user: dict = Depends(get_current_user)):
-    """Stateless logout — client discards the token."""
+def logout(response: Response, current_user: dict = Depends(get_current_user)):
+    clear_auth_cookie(response)
+    logger.info("User logged out", extra={"email": current_user.get("email")})
     return {"message": "Logged out successfully."}
 
 
 @auth_router.post("/forgot-password")
 async def forgot_password(req: ForgotPasswordRequest):
-    """
-    Generates a reset token and emails it.
-    Always returns 200 regardless of whether the email exists
-    (to prevent user enumeration).
-    """
     user = get_user_by_email(req.email)
     if user:
         token = secrets.token_urlsafe(32)
@@ -397,55 +525,49 @@ def reset_password(req: ResetPasswordRequest):
     if not row:
         raise HTTPException(status_code=400, detail="Invalid or already-used reset token.")
 
-    # Check expiry
-    expires_at = datetime.fromisoformat(row["expires_at"])
-    if datetime.utcnow() > expires_at:
+    if datetime.utcnow() > row.expires_at:
         raise HTTPException(status_code=400, detail="Reset token has expired. Please request a new one.")
 
-    user = get_user_by_email(row["email"])
+    user = get_user_by_email(row.email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    update_user_password(user["id"], hash_password(req.new_password))
+    update_user_password(user.id, hash_password(req.new_password))
     mark_reset_token_used(req.token)
+    logger.info("Password reset completed", extra={"email": user.email})
     return {"message": "Password updated successfully. You can now log in."}
 
 
 @auth_router.put("/update-profile", response_model=TokenResponse)
 def update_profile(
     req:          UpdateProfileRequest,
+    response:     Response,
     current_user: dict = Depends(get_current_user),
 ):
-    """
-    Update name, email, and optionally password.
-    Requires current_password to verify identity before any change.
-    """
     user = get_user_by_email(current_user["email"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    # Verify current password
-    if not verify_password(req.current_password, user["hashed_password"]):
+    if not verify_password(req.current_password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Current password is incorrect.")
 
-    # If email is changing, make sure it's not taken by another user
     if req.email != current_user["email"]:
         existing = get_user_by_email(req.email)
-        if existing and existing["id"] != current_user["id"]:
+        if existing and existing.id != current_user["id"]:
             raise HTTPException(status_code=400, detail="That email is already in use.")
 
-    # Update name + email
     updated = update_user(current_user["id"], req.name, req.email)
 
-    # Optionally update password
     if req.new_password:
         if len(req.new_password) < 8:
             raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
         update_user_password(current_user["id"], hash_password(req.new_password))
 
-    # Re-issue token (email may have changed)
-    token = create_access_token({"sub": updated["email"]})
+    token = create_access_token({"sub": updated.email})
+    set_auth_cookie(response, token)
+    logger.info("Profile updated", extra={"email": updated.email})
+
     return TokenResponse(
         token = token,
-        user  = UserOut(id=updated["id"], name=updated["name"], email=updated["email"]),
+        user  = UserOut(id=updated.id, name=updated.name, email=updated.email),
     )
