@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from api.chains.rag_chain import build_chain, build_contextual_chain
+from api.chains.rag_chain import build_chain, build_contextual_chain, add_documents_to_user_store
 from typing import List, Dict, Optional
 from api.memory.session_memory import get_memory
 from langchain_core.messages import HumanMessage, AIMessage
@@ -73,8 +73,24 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
-LOADER    = DocumentLoader()
-rag_chain = build_chain()
+LOADER = DocumentLoader()
+
+# Per-user retrieval chains are built lazily and cached in-process,
+# since loading a FAISS index has nontrivial cost. Falls back to the
+# shared base chain for anonymous/demo users.
+_user_chain_cache: dict = {}
+
+
+def get_chain_for_user(user_email: str):
+    key = user_email or "anonymous"
+    if key not in _user_chain_cache:
+        _user_chain_cache[key] = build_chain(user_email=key)
+    return _user_chain_cache[key]
+
+
+def invalidate_user_chain(user_email: str):
+    """Call after ingesting new documents so the next request re-loads the updated index."""
+    _user_chain_cache.pop(user_email, None)
 
 # ============================================================
 # INPUT SCHEMAS
@@ -169,10 +185,12 @@ def get_image_context(image_base64: str, image_type: str) -> str:
     return result
 
 
-def get_csv_context(csv_base64: str, question: str = "") -> str:
+def get_csv_context(csv_base64: str, question: str = "", user_email: str = None) -> str:
     """
     Returns a compact pandas summary instead of a raw row-dump,
     keeping token usage low while giving the LLM full context.
+    Also ingests the CSV rows into the user's personal vector store
+    so future chat questions can retrieve from it semantically.
     """
     key = hash_data(csv_base64 + question)
     if key in cache:
@@ -189,10 +207,31 @@ def get_csv_context(csv_base64: str, question: str = "") -> str:
         f"Summary statistics:\n{df.describe(include='all').to_string()}"
     )
     cache[key] = context
+
+    # Ingest into the user's personal knowledge base
+    if user_email and user_email != "anonymous":
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="wb") as tmp:
+                tmp.write(csv_bytes)
+                tmp_path = tmp.name
+            try:
+                docs = LOADER.load_csv(tmp_path)
+                add_documents_to_user_store(user_email, docs)
+                invalidate_user_chain(user_email)
+            finally:
+                os.unlink(tmp_path)
+        except Exception as ingest_err:
+            print(f"[vectorstore] CSV ingestion skipped: {ingest_err}")
+
     return context
 
 
-def get_pdf_context(pdf_base64: str, question: str = "") -> str:
+def get_pdf_context(pdf_base64: str, question: str = "", user_email: str = None) -> str:
+    """
+    Extracts text from the uploaded PDF for immediate context, and
+    ingests the page-level documents into the user's personal vector
+    store so the PDF becomes part of their permanent knowledge base.
+    """
     key = hash_data(pdf_base64 + question)
     if key in cache:
         return cache[key]
@@ -204,6 +243,14 @@ def get_pdf_context(pdf_base64: str, question: str = "") -> str:
         docs     = LOADER.load_pdf(tmp_path)
         result   = "\n".join([d.page_content for d in docs])
         cache[key] = result
+
+        if user_email and user_email != "anonymous":
+            try:
+                add_documents_to_user_store(user_email, docs)
+                invalidate_user_chain(user_email)
+            except Exception as ingest_err:
+                print(f"[vectorstore] PDF ingestion skipped: {ingest_err}")
+
         return result
     finally:
         os.unlink(tmp_path)
@@ -305,7 +352,8 @@ def chat_endpoint(
     memory      = get_memory(session_key)
     history_str = update_memory_and_history(memory, body.chat_history, session_key)
 
-    response = rag_chain.invoke({"input": body.question, "chat_history": history_str})
+    chain    = get_chain_for_user(email)
+    response = chain.invoke({"input": body.question, "chat_history": history_str})
     answer   = response.get("answer", "No response")
 
     chat_store.setdefault(session_key, [])
@@ -333,9 +381,9 @@ def multi_upload_endpoint(
     if body.image_base64 and body.image_type:
         contexts.append(f"Image context: {get_image_context(body.image_base64, body.image_type)}")
     if body.csv_base64 and body.csv_filename:
-        contexts.append(f"CSV context: {get_csv_context(body.csv_base64, body.question or '')}")
+        contexts.append(f"CSV context: {get_csv_context(body.csv_base64, body.question or '', user_email=email)}")
     if body.pdf_base64 and body.pdf_filename:
-        contexts.append(f"PDF context: {get_pdf_context(body.pdf_base64, body.question or '')}")
+        contexts.append(f"PDF context: {get_pdf_context(body.pdf_base64, body.question or '', user_email=email)}")
 
     combined = "\n\n".join(contexts) if contexts else None
 
@@ -344,7 +392,8 @@ def multi_upload_endpoint(
         response = chain.invoke({"input": body.question, "chat_history": history_str, "context": combined})
         answer   = response.content if hasattr(response, "content") else str(response)
     else:
-        response = rag_chain.invoke({"input": body.question, "chat_history": history_str})
+        chain    = get_chain_for_user(email)
+        response = chain.invoke({"input": body.question, "chat_history": history_str})
         answer   = response.get("answer", "No response")
 
     chat_store.setdefault(session_key, [])
