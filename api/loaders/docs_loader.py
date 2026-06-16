@@ -34,6 +34,9 @@ class DocumentLoader:
     ) -> None:
         """
         Load PDF, create embeddings, and save FAISS vector store.
+        (Writes to a single shared store — kept for backwards compatibility.
+        For per-user ingestion, use rag_chain.add_documents_to_user_store
+        with the documents returned by load_pdf/load_csv instead.)
         """
         documents = self.load_pdf(file_path)
 
