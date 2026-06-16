@@ -5,9 +5,15 @@ import json
 import numpy as np
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from api.chains.rag_chain import build_chain, build_contextual_chain, add_documents_to_user_store
+from api.chains.rag_chain import (
+    build_chain,
+    build_contextual_chain,
+    add_documents_to_user_store,
+    get_user_retriever,
+    format_chat_prompt,
+)
 from typing import List, Dict, Optional
 from api.memory.session_memory import get_memory
 from langchain_core.messages import HumanMessage, AIMessage
@@ -57,9 +63,8 @@ def user_session_key(email: str, session_id: str) -> str:
 # ============================================================
 # APP
 # ============================================================
-app = FastAPI(title="DataAnalystBot API", version="2.0.0")
+app = FastAPI(title="DataAnalystBot API", version="3.0.0")
 
-# Rate limiter must be set on app state before adding exception handler
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -75,9 +80,8 @@ app.include_router(auth_router)
 
 LOADER = DocumentLoader()
 
-# Per-user retrieval chains are built lazily and cached in-process,
-# since loading a FAISS index has nontrivial cost. Falls back to the
-# shared base chain for anonymous/demo users.
+# Per-user retrieval chains (used by the non-streaming /chat path and
+# as a fallback) are built lazily and cached in-process.
 _user_chain_cache: dict = {}
 
 
@@ -91,6 +95,28 @@ def get_chain_for_user(user_email: str):
 def invalidate_user_chain(user_email: str):
     """Call after ingesting new documents so the next request re-loads the updated index."""
     _user_chain_cache.pop(user_email, None)
+
+
+# Per-user retrievers, cached separately for the streaming path
+# (streaming bypasses the LangChain chain entirely and calls Groq directly).
+_user_retriever_cache: dict = {}
+
+
+def get_retriever_for_user(user_email: str):
+    key = user_email or "anonymous"
+    if key not in _user_retriever_cache:
+        _user_retriever_cache[key] = get_user_retriever(user_email=key)
+    return _user_retriever_cache[key]
+
+
+def invalidate_user_retriever(user_email: str):
+    _user_retriever_cache.pop(user_email, None)
+
+
+def invalidate_user_caches(user_email: str):
+    invalidate_user_chain(user_email)
+    invalidate_user_retriever(user_email)
+
 
 # ============================================================
 # INPUT SCHEMAS
@@ -162,6 +188,12 @@ def update_memory_and_history(memory, chat_history, session_key: str) -> str:
     return "\n".join([f"{m.type}: {m.content}" for m in memory.messages])
 
 
+def append_ai_message(session_key: str, answer: str):
+    chat_store.setdefault(session_key, [])
+    chat_store[session_key].append({"type": "ai", "content": answer})
+    cache["chat_store"] = chat_store
+
+
 # ============================================================
 # CONTEXT HELPERS
 # ============================================================
@@ -208,7 +240,6 @@ def get_csv_context(csv_base64: str, question: str = "", user_email: str = None)
     )
     cache[key] = context
 
-    # Ingest into the user's personal knowledge base
     if user_email and user_email != "anonymous":
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="wb") as tmp:
@@ -217,7 +248,7 @@ def get_csv_context(csv_base64: str, question: str = "", user_email: str = None)
             try:
                 docs = LOADER.load_csv(tmp_path)
                 add_documents_to_user_store(user_email, docs)
-                invalidate_user_chain(user_email)
+                invalidate_user_caches(user_email)
             finally:
                 os.unlink(tmp_path)
         except Exception as ingest_err:
@@ -247,7 +278,7 @@ def get_pdf_context(pdf_base64: str, question: str = "", user_email: str = None)
         if user_email and user_email != "anonymous":
             try:
                 add_documents_to_user_store(user_email, docs)
-                invalidate_user_chain(user_email)
+                invalidate_user_caches(user_email)
             except Exception as ingest_err:
                 print(f"[vectorstore] PDF ingestion skipped: {ingest_err}")
 
@@ -338,7 +369,33 @@ def clean_for_json(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# CHAT
+# SSE HELPERS
+# ============================================================
+def sse_event(event: str, data: dict) -> str:
+    """Formats a single Server-Sent Event frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def stream_groq_completion(messages: list, model: str = "meta-llama/llama-4-scout-17b-16e-instruct", temperature: float = 0.1):
+    """
+    Yields text chunks from a Groq streaming chat completion.
+    Plain generator — caller wraps this into SSE frames.
+    """
+    client = Groq()
+    stream = client.chat.completions.create(
+        model       = model,
+        temperature = temperature,
+        messages    = messages,
+        stream      = True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
+# ============================================================
+# CHAT  (streaming via SSE)
 # ============================================================
 @app.post("/chat")
 @limiter.limit("30/minute")
@@ -347,23 +404,44 @@ def chat_endpoint(
     body:         QueryRequest,
     current_user: dict = Depends(get_current_user_optional),
 ):
+    """
+    Streams the AI response token-by-token as Server-Sent Events.
+    Frontend should consume this with EventSource or a manual
+    fetch + ReadableStream reader (see js/app.js streamChat()).
+
+    Event types emitted:
+      - "token": { "text": "..." }       one or more per chunk
+      - "done":  { "answer": "..." }     final full answer, once
+      - "error": { "message": "..." }    on failure
+    """
     email       = (current_user or {}).get("email", "anonymous")
     session_key = user_session_key(email, body.session_id or "default")
     memory      = get_memory(session_key)
     history_str = update_memory_and_history(memory, body.chat_history, session_key)
 
-    chain    = get_chain_for_user(email)
-    response = chain.invoke({"input": body.question, "chat_history": history_str})
-    answer   = response.get("answer", "No response")
+    retriever = get_retriever_for_user(email)
+    docs      = retriever.invoke(body.question)
+    context   = "\n\n".join(d.page_content for d in docs)
+    prompt    = format_chat_prompt(body.question, history_str, context)
 
-    chat_store.setdefault(session_key, [])
-    chat_store[session_key].append({"type": "ai", "content": answer})
-    cache["chat_store"] = chat_store
-    return {"response": answer}
+    def event_stream():
+        full_answer = ""
+        try:
+            for delta in stream_groq_completion(
+                messages=[{"role": "user", "content": prompt}]
+            ):
+                full_answer += delta
+                yield sse_event("token", {"text": delta})
+            append_ai_message(session_key, full_answer)
+            yield sse_event("done", {"answer": full_answer})
+        except Exception as e:
+            yield sse_event("error", {"message": str(e)})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # ============================================================
-# MULTI-UPLOAD  (rate-limited: 20/minute per user)
+# MULTI-UPLOAD  (streaming via SSE, rate-limited: 20/minute per user)
 # ============================================================
 @app.post("/multi-upload")
 @limiter.limit("20/minute")
@@ -372,6 +450,10 @@ def multi_upload_endpoint(
     body:         MultiUploadQueryRequest,
     current_user: dict = Depends(get_current_user_optional),
 ):
+    """
+    Same SSE contract as /chat. Accepts any combination of image, CSV,
+    and PDF, builds combined context, and streams the answer.
+    """
     email       = (current_user or {}).get("email", "anonymous")
     session_key = user_session_key(email, body.session_id or "default")
     memory      = get_memory(session_key)
@@ -385,21 +467,29 @@ def multi_upload_endpoint(
     if body.pdf_base64 and body.pdf_filename:
         contexts.append(f"PDF context: {get_pdf_context(body.pdf_base64, body.question or '', user_email=email)}")
 
-    combined = "\n\n".join(contexts) if contexts else None
-
-    if combined:
-        chain    = build_contextual_chain()
-        response = chain.invoke({"input": body.question, "chat_history": history_str, "context": combined})
-        answer   = response.content if hasattr(response, "content") else str(response)
+    if contexts:
+        combined_context = "\n\n".join(contexts)
     else:
-        chain    = get_chain_for_user(email)
-        response = chain.invoke({"input": body.question, "chat_history": history_str})
-        answer   = response.get("answer", "No response")
+        retriever         = get_retriever_for_user(email)
+        docs               = retriever.invoke(body.question)
+        combined_context  = "\n\n".join(d.page_content for d in docs)
 
-    chat_store.setdefault(session_key, [])
-    chat_store[session_key].append({"type": "ai", "content": answer})
-    cache["chat_store"] = chat_store
-    return {"response": answer}
+    prompt = format_chat_prompt(body.question, history_str, combined_context)
+
+    def event_stream():
+        full_answer = ""
+        try:
+            for delta in stream_groq_completion(
+                messages=[{"role": "user", "content": prompt}]
+            ):
+                full_answer += delta
+                yield sse_event("token", {"text": delta})
+            append_ai_message(session_key, full_answer)
+            yield sse_event("done", {"answer": full_answer})
+        except Exception as e:
+            yield sse_event("error", {"message": str(e)})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # ============================================================
@@ -419,6 +509,12 @@ def get_recent_chats(
 def get_recent_chat_titles(
     current_user: dict = Depends(get_current_user_optional),
 ):
+    """
+    Returns all session titles (first human message) for the user.
+    Each entry also includes a lowercase searchable blob of every
+    message in that session, so the frontend can filter by keyword
+    without an extra round-trip per session.
+    """
     email  = (current_user or {}).get("email", "anonymous")
     prefix = f"{email}:"
     titles = []
@@ -426,10 +522,18 @@ def get_recent_chat_titles(
         if not key.startswith(prefix):
             continue
         session_id = key[len(prefix):]
+        first_human = None
+        searchable  = []
         for msg in history:
-            if msg["type"] == "human":
-                titles.append({"session_id": session_id, "title": msg["content"]})
-                break
+            searchable.append(str(msg.get("content", "")))
+            if first_human is None and msg["type"] == "human":
+                first_human = msg["content"]
+        if first_human is not None:
+            titles.append({
+                "session_id": session_id,
+                "title":      first_human,
+                "preview":    " ".join(searchable).lower()[:2000],
+            })
     return {"sessions": titles}
 
 
@@ -621,7 +725,6 @@ Respond ONLY in the following JSON format (no markdown, no extra text):
         except json.JSONDecodeError:
             result = {"sql_query": raw, "explanation": "Raw output returned.", "suggestions": ""}
 
-        # Save to user session history
         if body.session_id:
             email       = (current_user or {}).get("email", "anonymous")
             session_key = user_session_key(email, body.session_id)

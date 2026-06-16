@@ -129,6 +129,28 @@ def add_documents_to_user_store(user_email: str, documents) -> None:
     store.save_local(user_path)
 
 
+def get_user_retriever(user_email: str = None):
+    """
+    Returns just the retriever (not the full chain) so callers can
+    fetch context documents manually and stream the LLM response
+    themselves via Groq's native streaming API.
+    """
+    vectorstore = load_user_vectorstore(user_email)
+    return vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={'k': 6, 'lambda_mult': 0.25}
+    )
+
+
+def format_chat_prompt(question: str, chat_history: str, context: str) -> str:
+    """Renders TEMPLATE with the given values, for manual streaming calls."""
+    return TEMPLATE.format(
+        chat_history=chat_history,
+        context=context,
+        input=question,
+    )
+
+
 # ============================================================
 # CHAIN BUILDERS
 # ============================================================
