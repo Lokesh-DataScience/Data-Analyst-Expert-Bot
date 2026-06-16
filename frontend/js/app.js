@@ -14,7 +14,8 @@ const state = {
   },
   aug: { b64:null, filename:null, diagnosis:null, result:null },
   initialized: false,
-  imageUploads: []   // [{timestamp}] — tracks image upload times for quota UI
+  imageUploads: [],
+  allSessions: []   // [{timestamp}] — tracks image upload times for quota UI
 };
 
 const tabLabels = {
@@ -84,6 +85,9 @@ function initApp(){
   safeRun('darkMode',          wireDarkMode);
   safeRun('exportChat',        wireExportChat);
   safeRun('imageQuota',        initImageQuota);
+  safeRun('chatSearch',        wireChatSearch);
+  safeRun('keyboardShortcuts', wireKeyboardShortcuts);
+  safeRun('toasts',            initToastContainer);
   safeRun('wireFileDrops',     wireFileDrops);
   safeRun('wireChat',          wireChat);
   safeRun('wireUploadAnalysis',wireUploadAnalysis);
@@ -208,6 +212,86 @@ function sqlSkeletonHTML(){
       <div class="skel-title skel" style="width:35%;"></div>
       <div class="skel-row skel" style="height:90px;border-radius:8px;"></div>
     </div>`;
+}
+
+/* ============================================================
+   TOAST NOTIFICATIONS
+============================================================ */
+function initToastContainer(){
+  if(document.getElementById('toastContainer')) return;
+  const el = document.createElement('div');
+  el.id = 'toastContainer';
+  el.className = 'toast-container';
+  document.body.appendChild(el);
+}
+
+function showToast(message, type = 'info', duration = 3500){
+  const container = document.getElementById('toastContainer');
+  if(!container) return;
+
+  const icons = {
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
+    error:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    warn:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    info:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
+  };
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span class="toast-msg">${escapeHtml(message)}</span><button class="toast-close">✕</button>`;
+  container.appendChild(toast);
+
+  requestAnimationFrame(()=> toast.classList.add('show'));
+
+  const remove = ()=>{
+    toast.classList.remove('show');
+    setTimeout(()=> toast.remove(), 200);
+  };
+  toast.querySelector('.toast-close').addEventListener('click', remove);
+  if(duration > 0) setTimeout(remove, duration);
+}
+
+/* ============================================================
+   KEYBOARD SHORTCUTS
+   Cmd/Ctrl+K → new chat
+   Esc        → close any open modal / dropdown / mobile sidebar
+   /          → focus chat input (when not already typing)
+============================================================ */
+function wireKeyboardShortcuts(){
+  document.addEventListener('keydown', e=>{
+    const tag       = (e.target.tagName || '').toLowerCase();
+    const isTyping  = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
+    const cmdOrCtrl = e.metaKey || e.ctrlKey;
+
+    if(cmdOrCtrl && e.key.toLowerCase() === 'k'){
+      e.preventDefault();
+      startNewChat();
+      showToast('Started a new chat', 'info', 2000);
+      return;
+    }
+
+    if(e.key === 'Escape'){
+      const modal = document.getElementById('profileModal');
+      if(modal && modal.classList.contains('open')){ modal.classList.remove('open'); return; }
+      const exportMenu = document.getElementById('exportMenu');
+      if(exportMenu && exportMenu.classList.contains('open')){ exportMenu.classList.remove('open'); return; }
+      const sidebar = document.querySelector('.sidebar');
+      const overlay = document.getElementById('sidebarOverlay');
+      if(sidebar && sidebar.classList.contains('open')){
+        sidebar.classList.remove('open');
+        overlay?.classList.remove('visible');
+        return;
+      }
+      if(isTyping) e.target.blur();
+      return;
+    }
+
+    if(e.key === '/' && !isTyping){
+      e.preventDefault();
+      document.querySelector('.nav-tab[data-tab="chat"]')?.click();
+      document.getElementById('chatInput')?.focus();
+    }
+  });
 }
 
 function wireDarkMode(){
@@ -426,17 +510,40 @@ async function loadRecentChats(){
   try{
     const res      = await authedFetch('/recent-chat-titles');
     const data     = await res.json();
-    const sessions = (data.sessions || []).slice().reverse();
-    if(!sessions.length){ list.innerHTML = '<div class="chat-empty">No recent sessions yet.</div>'; return; }
-    list.innerHTML = '';
-    sessions.forEach(s=>{
-      const b = document.createElement('button');
-      b.className   = 'chat-item' + (s.session_id===state.sessionId ? ' active' : '');
-      b.textContent = (s.title || s.session_id).slice(0,40);
-      b.addEventListener('click', ()=> loadSession(s.session_id));
-      list.appendChild(b);
-    });
+    state.allSessions = (data.sessions || []).slice().reverse();
+    renderChatList(document.getElementById('chatSearchInput')?.value || '');
   }catch(e){ list.innerHTML = '<div class="chat-empty">Could not load sessions.</div>'; }
+}
+
+function renderChatList(filterText){
+  const list     = document.getElementById('chatList');
+  const sessions = state.allSessions || [];
+  const q        = (filterText || '').trim().toLowerCase();
+
+  const filtered = q
+    ? sessions.filter(s=>
+        (s.title || '').toLowerCase().includes(q) ||
+        (s.preview || '').includes(q)
+      )
+    : sessions;
+
+  if(!sessions.length){ list.innerHTML = '<div class="chat-empty">No recent sessions yet.</div>'; return; }
+  if(!filtered.length){ list.innerHTML = `<div class="chat-empty">No sessions match "${escapeHtml(filterText)}".</div>`; return; }
+
+  list.innerHTML = '';
+  filtered.forEach(s=>{
+    const b = document.createElement('button');
+    b.className   = 'chat-item' + (s.session_id===state.sessionId ? ' active' : '');
+    b.textContent = (s.title || s.session_id).slice(0,40);
+    b.addEventListener('click', ()=> loadSession(s.session_id));
+    list.appendChild(b);
+  });
+}
+
+function wireChatSearch(){
+  const input = document.getElementById('chatSearchInput');
+  if(!input) return;
+  input.addEventListener('input', ()=> renderChatList(input.value));
 }
 
 async function loadSession(sessionId){
@@ -521,11 +628,12 @@ async function sendChatMessage(){
   renderChat();
   input.value = '';
 
-  // Show a skeleton "typing" placeholder while waiting for the response
+  // Show a skeleton "typing" placeholder while waiting for the first token
   const win = document.getElementById('chatWindow');
   const skelEl = document.createElement('div');
   skelEl.innerHTML = chatSkeletonHTML();
-  win.appendChild(skelEl.firstElementChild);
+  const skelNode = skelEl.firstElementChild;
+  win.appendChild(skelNode);
   win.scrollTop = win.scrollHeight;
 
   const payload = {
@@ -537,19 +645,91 @@ async function sendChatMessage(){
   if(csv_b64){   payload.csv_base64   = csv_b64;   payload.csv_filename = csv_filename; }
   if(pdf_b64){   payload.pdf_base64   = pdf_b64;   payload.pdf_filename = pdf_filename; }
 
+  let streamedText = '';
+  let bubbleEl      = null;
+
+  function ensureBubble(){
+    if(bubbleEl) return bubbleEl;
+    // Replace the skeleton with a real (initially empty) AI message bubble
+    skelNode.remove();
+    const msgEl = document.createElement('div');
+    msgEl.className = 'msg ai';
+    msgEl.innerHTML = `<div class="msg-avatar">AI</div><div class="msg-bubble"></div>`;
+    win.appendChild(msgEl);
+    bubbleEl = msgEl.querySelector('.msg-bubble');
+    return bubbleEl;
+  }
+
   try{
     const res = await authedFetch('/multi-upload', {
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
     });
     if(res.status === 429){ handleRateLimit('chat'); throw new Error('Rate limit reached. Please wait a moment.'); }
     if(!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    state.chatHistory.push({ type:'ai', content: data.response || '⚠️ No answer returned.' });
+
+    await consumeSSEStream(res, {
+      onToken: (chunk)=>{
+        streamedText += chunk;
+        ensureBubble().textContent = streamedText;
+        win.scrollTop = win.scrollHeight;
+      },
+      onDone: (finalAnswer)=>{
+        state.chatHistory.push({ type:'ai', content: finalAnswer || streamedText || '⚠️ No answer returned.' });
+      },
+      onError: (msg)=>{
+        throw new Error(msg);
+      }
+    });
   }catch(e){
+    if(skelNode.isConnected) skelNode.remove();
     state.chatHistory.push({ type:'ai', content: '❌ ' + e.message });
+    renderChat();
   }
-  renderChat();
+
+  if(!state.chatHistory.length || state.chatHistory[state.chatHistory.length-1].content !== streamedText){
+    // onDone already pushed the final message — just make sure the DOM matches state exactly
+    renderChat();
+  }
   sendBtn.disabled = false;
+}
+
+/* ============================================================
+   SSE STREAM CONSUMER
+   Parses "event: <name>\ndata: <json>\n\n" frames from a
+   fetch() Response body and dispatches to the right callback.
+============================================================ */
+async function consumeSSEStream(response, { onToken, onDone, onError }){
+  const reader  = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer    = '';
+
+  while(true){
+    const { value, done } = await reader.read();
+    if(done) break;
+    buffer += decoder.decode(value, { stream:true });
+
+    // SSE frames are separated by a blank line
+    let frameEnd;
+    while((frameEnd = buffer.indexOf('\n\n')) !== -1){
+      const frame = buffer.slice(0, frameEnd);
+      buffer = buffer.slice(frameEnd + 2);
+
+      let eventName = 'message';
+      let dataLine  = '';
+      frame.split('\n').forEach(line=>{
+        if(line.startsWith('event:')) eventName = line.slice(6).trim();
+        else if(line.startsWith('data:')) dataLine += line.slice(5).trim();
+      });
+
+      if(!dataLine) continue;
+      let parsed;
+      try{ parsed = JSON.parse(dataLine); }catch(_){ continue; }
+
+      if(eventName === 'token' && onToken) onToken(parsed.text || '');
+      else if(eventName === 'done' && onDone) onDone(parsed.answer || '');
+      else if(eventName === 'error' && onError) onError(parsed.message || 'Stream error');
+    }
+  }
 }
 
 /* ============================================================
@@ -950,6 +1130,7 @@ function wireProfileModal(){
       document.getElementById('modalEmail').textContent=data.user.email;
       document.getElementById('profileCurrentPw').value='';
       statusBox(statusEl,'success','✅ Profile updated.');
+      showToast('Profile updated successfully', 'success');
     }catch(e){ statusBox(statusEl,'error','❌ '+e.message); }
   });
 
@@ -972,6 +1153,7 @@ function wireProfileModal(){
       document.getElementById('pwNewPw').value='';
       document.getElementById('pwConfirmPw').value='';
       statusBox(statusEl,'success','✅ Password updated.');
+      showToast('Password updated successfully', 'success');
     }catch(e){ statusBox(statusEl,'error','❌ '+e.message); }
   });
 }
@@ -982,4 +1164,5 @@ function wireProfileModal(){
 function handleRateLimit(tabId){
   const el = document.getElementById(tabId + 'RateWarn');
   if(el){ el.classList.add('visible'); setTimeout(()=> el.classList.remove('visible'), 60000); }
+  showToast('Rate limit reached — please wait a moment', 'warn', 4000);
 }
